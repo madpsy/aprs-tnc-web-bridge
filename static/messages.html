@@ -1,0 +1,1681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>APRS Messages</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Bootstrap CSS -->
+  <link 
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" 
+    rel="stylesheet">
+  <!-- Socket.IO -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
+  <!-- CryptoJS for SHA-256 Hashing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <style>
+  /* Existing CSS remains unchanged */
+  html,
+  body {
+    /* Fill the full browser height */
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    /* Hide the browser’s main scrollbar so we only see the chat window’s scroll */
+    overflow: hidden;
+  }
+
+  body {
+    background-color: #f8f9fa;
+  }
+
+  /* .chat-container takes up the entire viewport minus horizontal margins/padding */
+  .chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;              /* Fill vertical space */
+    max-width: 900px;          /* Optional: limit width for desktop */
+    margin: 0 auto;            /* Center horizontally */
+    padding: 20px;             /* Some padding inside */
+    box-sizing: border-box;
+
+    background: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+  }
+
+  /* Sidebar remains at the top, does not grow */
+  .sidebar {
+    flex-shrink: 0;
+    margin-bottom: 20px;
+  }
+
+  /* The main scrolling region for messages */
+  .chat-window {
+    flex: 1;           /* Grows to fill remaining space */
+    overflow-y: auto;  /* This is where scrolling happens */
+    border: 1px solid #dee2e6;
+    border-radius: 5px;
+    padding: 10px;
+    background-color: #f1f3f5;
+    margin-bottom: 20px; /* Some spacing before the send form */
+    position: relative;
+  }
+
+  .message {
+    margin-bottom: 15px;
+    position: relative;
+  }
+
+  .message .from {
+    font-weight: bold;
+  }
+
+  .message .timestamp {
+    font-size: 0.8em;
+    color: #6c757d;
+    margin-left: 10px;
+  }
+
+  /* New CSS for ACK time */
+  .message .ack-time {
+    font-size: 0.8em;
+    color: #6c757d;
+    margin-left: 5px;
+  }
+
+  /* Keep the Send form at the bottom, not flexing vertically */
+  .send-form {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .send-form input {
+    flex: 1;
+    margin-right: 10px;
+  }
+
+  /* Hide additional Bot command buttons by default */
+  #botCommands {
+    display: none;
+  }
+
+  .symbol-img {
+    width: 20px;
+    height: 20px;
+    margin-right: 5px;
+  }
+
+  /* Example of controlling conversation list and so on... */
+  .conversations {
+    list-style: none;
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 20px;
+  }
+
+  .conversations li {
+    display: flex;
+    align-items: center;
+    padding: 10px;
+    cursor: pointer;
+    border-radius: 5px;
+    margin-bottom: 5px;
+    background-color: #e9ecef;
+    position: relative;
+  }
+
+  .conversations li.active {
+    background-color: #0d6efd;
+    color: white;
+  }
+
+  .unread-count {
+    position: absolute;
+    right: 35px;
+    top: 10px;
+    background-color: red;
+    color: white;
+    border-radius: 50%;
+    padding: 2px 6px;
+    font-size: 0.75em;
+  }
+
+  .remove-conversation-btn {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    background: transparent;
+    border: none;
+    color: #dc3545;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 1em;
+  }
+
+  .remove-conversation-btn:hover {
+    color: #a71d2a;
+  }
+
+  .message .receipt-indicator {
+    position: absolute;
+    top: 0;
+    right: 0;
+    font-size: 1.2em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background-color: #dee2e6;
+    transition: background-color 0.3s, color 0.3s;
+  }
+
+  .receipt-spinner::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    border: 2px solid #0d6efd;
+    border-top: 2px solid transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  .receipt-tick-circle {
+    color: green;
+  }
+
+  .receipt-x-circle {
+    color: red;
+    cursor: pointer;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  /* Responsive adjustments */
+  @media (max-width: 768px) {
+    .chat-container {
+      padding: 10px;
+    }
+
+    .sidebar {
+      margin-bottom: 10px;
+    }
+
+    .remove-conversation-btn {
+      font-size: 0.9em;
+    }
+  }
+
+  </style>
+</head>
+<body>
+
+<div class="chat-container">
+  <div class="sidebar">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h4>Messages</h4>
+      <button class="btn btn-primary btn-sm" id="addUserCallsignBtn">Add Callsign</button>
+    </div>
+    <!-- 'Test' and 'Delete' buttons in line with callsign dropdown -->
+    <div class="mb-3 d-flex align-items-center">
+      <label for="userCallsignSelect" class="form-label me-2">Your Callsign</label>
+      <select class="form-select me-2" id="userCallsignSelect" style="max-width: 200px;">
+        <option value="" disabled>Select your callsign</option>
+      </select>
+      <button class="btn btn-danger btn-sm me-2" id="deleteBtn">Delete</button>
+      <button class="btn btn-info btn-sm" id="testBtn">Test</button>
+    </div>
+    <hr>
+    <div>
+      <h5>Conversations</h5>
+      <ul class="conversations" id="conversationsList"></ul>
+      <div class="d-flex gap-2 align-items-center">
+        <button class="btn btn-secondary btn-sm" id="addConversationBtn">Add Conversation</button>
+        <button class="btn btn-warning btn-sm" id="botBtn">Bot</button>
+        <button class="btn btn-danger btn-sm" id="clearConversationBtn">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="chat-window" id="chatWindow"></div>
+
+  <!-- Send form for typing messages -->
+  <form id="sendMessageForm" class="send-form">
+    <input type="text" class="form-control" id="messageInput" placeholder="Type your message..." required>
+    <button class="btn btn-success" type="submit">Send</button>
+  </form>
+
+  <!-- Additional Bot Commands (buttons) appear only if conversation == "Bot" -->
+  <div class="mt-2" id="botCommands">
+    <button class="btn btn-outline-primary btn-sm me-2" id="btnSeen">Seen</button>
+    <button class="btn btn-outline-primary btn-sm me-2" id="btnLast">Last</button>
+    <button class="btn btn-outline-primary btn-sm" id="btnHelp">Help</button>
+  </div>
+</div>
+
+<!-- Add User Callsign Modal -->
+<div class="modal fade" id="addUserCallsignModal" tabindex="-1" aria-labelledby="addUserCallsignModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="addUserCallsignForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addUserCallsignModalLabel">Add New Callsign</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label for="newUserCallsign" class="form-label">Callsign</label>
+            <input type="text" class="form-control" id="newUserCallsign" required pattern="^[A-Z0-9-]{3,15}$" title="3-15 alphanumeric characters or hyphens">
+            <div class="form-text">Enter your callsign (e.g., MM3NDH-14).</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary">Add Callsign</button>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Add Conversation Modal -->
+<div class="modal fade" id="addConversationModal" tabindex="-1" aria-labelledby="addConversationModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="addConversationForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addConversationModalLabel">Add New Conversation</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label for="recipientCallsign" class="form-label">Recipient Callsign</label>
+            <input type="text" class="form-control" id="recipientCallsign" required pattern="^[A-Z0-9-]{3,15}$" title="3-15 alphanumeric characters or hyphens">
+            <div class="form-text">Enter the recipient's callsign (e.g., MB7UNH-10).</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary">Add Conversation</button>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script 
+  src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('APRS Chat Application Initialized.');
+
+  // Utility: callsignDisplayName
+  function callsignDisplayName(callsign) {
+    return callsign === "MM3NDH-13" ? "Bot" : callsign;
+  }
+
+  // Utility: padCallsign to ensure 9 characters by padding with spaces
+  function padCallsign(callsign) {
+    return callsign.toUpperCase().padEnd(9, ' ');
+  }
+
+  function toggleBotCommands() {
+    const botCommandsDiv = document.getElementById('botCommands');
+    if (currentConversation === "MM3NDH-13") {
+      botCommandsDiv.style.display = 'block';
+    } else {
+      botCommandsDiv.style.display = 'none';
+    }
+  }
+
+  function sendBrowserNotification(callsign, message) {
+    const displayName = callsignDisplayName(callsign);
+    if (Notification.permission === "granted") {
+      new Notification(`Message from ${displayName}`, { body: message });
+    }
+  }
+
+  // Fetch symbol if not already stored
+  function fetchSymbolIfNeeded(callsign) {
+    const key = `symbolImage_${callsign}`;
+    if (localStorage.getItem(key)) {
+      console.log(`Symbol for ${callsign} already in localStorage`);
+      return;
+    }
+    console.log(`Fetching symbol for ${callsign}...`);
+    fetch(`https://lora-aprs.live/api/symbol?callsign=${encodeURIComponent(callsign)}`)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Symbol not found or status=${response.status}`);
+        }
+        return response.blob();
+      })
+      .then(blob => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      }))
+      .then(dataUrl => {
+        localStorage.setItem(key, dataUrl);
+        console.log(`Symbol stored for ${callsign}`);
+        loadConversations(); // Refresh conversations to display the symbol
+      })
+      .catch(err => {
+        console.log(`No symbol for ${callsign}, or error:`, err);
+      });
+  }
+
+  // Request Notification Permission
+  if ("Notification" in window) {
+    Notification.requestPermission();
+  }
+
+  const socket = io.connect(location.protocol + '//' + location.hostname + ':' + location.port);
+
+  socket.on('connect', () => {
+    console.log(`Connected to Socket.IO server with ID: ${socket.id}`);
+  });
+  socket.on('disconnect', (reason) => console.log(`Disconnected. Reason: ${reason}`));
+  socket.on('connect_error', (error) => console.error('Connection error:', error));
+
+  // Initialize Modals
+  const addUserCallsignModal = new bootstrap.Modal(document.getElementById('addUserCallsignModal'));
+  const addConversationModal = new bootstrap.Modal(document.getElementById('addConversationModal'));
+
+  // DOM Elements
+  const userCallsignSelect = document.getElementById('userCallsignSelect');
+  const addUserCallsignBtn = document.getElementById('addUserCallsignBtn');
+  const addUserCallsignForm = document.getElementById('addUserCallsignForm');
+  const conversationsList = document.getElementById('conversationsList');
+  const addConversationBtn = document.getElementById('addConversationBtn');
+  const clearConversationBtn = document.getElementById('clearConversationBtn');
+  const addConversationForm = document.getElementById('addConversationForm');
+  const chatWindow = document.getElementById('chatWindow');
+  const sendMessageForm = document.getElementById('sendMessageForm');
+  const messageInput = document.getElementById('messageInput');
+  const testBtn = document.getElementById('testBtn');
+  const deleteBtn = document.getElementById('deleteBtn'); // Added Delete Button
+  const botBtn = document.getElementById('botBtn');
+
+  const btnSeen = document.getElementById('btnSeen');
+  const btnLast = document.getElementById('btnLast');
+  const btnHelp = document.getElementById('btnHelp');
+
+  // User and Conversation Data
+  let userCallsigns = JSON.parse(localStorage.getItem('userCallsigns')) || [];
+  const savedLastCallsign = localStorage.getItem('lastSelectedCallsign');
+  let currentUserCallsign = (savedLastCallsign && userCallsigns.includes(savedLastCallsign)) ? savedLastCallsign : (userCallsigns.length ? userCallsigns[0] : null);
+  let currentConversation = null;
+  let receiptEnabled = true;
+
+  // Retry and Receipt Maps
+  const messageRetryMap = new Map();
+  const processedReceiptMap = new Map();
+  const displayedReceiptIds = new Set(); 
+  let unreadCounts = JSON.parse(localStorage.getItem('unreadCounts')) || {};
+  let isLoadingMessages = false;
+
+  const MAX_RECEIPT_RESENDS = 3;
+
+  // Generate a unique session ID for the current session
+  const currentSessionId = Date.now();
+
+  // Function to Generate Receipt ID
+  function generateReceiptId() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let receiptId = '';
+    for (let i = 0; i < 5; i++) {
+      receiptId += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return receiptId;
+  }
+
+  // Update Unread Count in UI
+  function updateUnreadCountUI(callsign) {
+    const li = Array.from(conversationsList.children).find(li => li.dataset.recipient === callsign);
+    if (li) {
+      const existingBadge = li.querySelector('.unread-count');
+      if (existingBadge) existingBadge.remove();
+
+      if (unreadCounts[callsign] && unreadCounts[callsign] > 0) {
+        const badge = document.createElement('span');
+        badge.classList.add('unread-count');
+        badge.textContent = unreadCounts[callsign];
+        li.appendChild(badge);
+      }
+    }
+  }
+
+  // Increment Unread Count
+  function incrementUnreadCount(callsign) {
+    unreadCounts[callsign] = (unreadCounts[callsign] || 0) + 1;
+    localStorage.setItem('unreadCounts', JSON.stringify(unreadCounts));
+    updateUnreadCountUI(callsign);
+
+    console.log(`Unread count for ${callsign}: ${unreadCounts[callsign]}`);
+
+    if (currentConversation !== callsign) {
+      const messagesKey = `messages_${currentUserCallsign}_${callsign}`;
+      const messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+      const latestMessage = messages[messages.length - 1];
+      if (latestMessage) {
+        const displayText = receiptEnabled
+          ? latestMessage.text.replace(/\{[A-Z0-9]{1,5}$/, '').trim()
+          : latestMessage.text;
+        sendBrowserNotification(callsign, displayText);
+      }
+    }
+  }
+
+  // Reset Unread Count
+  function resetUnreadCount(callsign) {
+    if (unreadCounts[callsign]) {
+      unreadCounts[callsign] = 0;
+      localStorage.setItem('unreadCounts', JSON.stringify(unreadCounts));
+      updateUnreadCountUI(callsign);
+      console.log(`Unread count for ${callsign} reset to 0.`);
+    }
+  }
+
+  // Populate User Callsign Dropdown
+  function populateUserCallsignDropdown() {
+    userCallsignSelect.innerHTML = '<option value="" disabled>Select your callsign</option>';
+    userCallsigns.forEach(callsign => {
+      const option = document.createElement('option');
+      option.value = callsign;
+      option.textContent = callsign;
+      userCallsignSelect.appendChild(option);
+    });
+    if (currentUserCallsign) {
+      userCallsignSelect.value = currentUserCallsign;
+    }
+    console.log('User callsign dropdown populated:', userCallsigns);
+  }
+
+  // Load Conversations into UI
+  function loadConversations() {
+    conversationsList.innerHTML = '';
+    if (!currentUserCallsign) return;
+
+    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
+    conversations.forEach(recipient => {
+      const li = document.createElement('li');
+      li.dataset.recipient = recipient;
+
+      const symbolImage = localStorage.getItem(`symbolImage_${recipient}`);
+      if (symbolImage) {
+        const imgEl = document.createElement('img');
+        imgEl.src = symbolImage;
+        imgEl.classList.add('symbol-img');
+        li.appendChild(imgEl);
+      }
+      const textNode = document.createTextNode(callsignDisplayName(recipient));
+      li.appendChild(textNode);
+
+      if (recipient === currentConversation) li.classList.add('active');
+
+      const removeBtn = document.createElement('button');
+      removeBtn.classList.add('remove-conversation-btn');
+      removeBtn.textContent = '✖';
+      removeBtn.title = 'Remove Conversation';
+      removeBtn.setAttribute('aria-label', `Remove conversation with ${callsignDisplayName(recipient)}`);
+      li.appendChild(removeBtn);
+
+      conversationsList.appendChild(li);
+      updateUnreadCountUI(recipient);
+    });
+  }
+
+  // Load Messages into Chat Window
+  function loadMessages() {
+    chatWindow.innerHTML = '';
+    if (!currentUserCallsign || !currentConversation) {
+      toggleBotCommands();
+      return;
+    }
+    isLoadingMessages = true;
+    const messagesKey = `messages_${currentUserCallsign}_${currentConversation}`;
+    const messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+
+    messages.forEach(msg => {
+      appendMessage(
+        msg.from === currentUserCallsign ? 'You' : callsignDisplayName(msg.from),
+        msg.text,
+        msg.timestamp,
+        msg.receiptId || null,
+        msg.receiptReceived || false,
+        msg.receiptFailed || false,
+        msg.rawPacket || null // Pass rawPacket here
+      );
+    });
+
+    // After loading messages, mark failed messages from previous sessions
+    messages.forEach(msg => {
+      if (msg.from === currentUserCallsign && msg.receiptId && !msg.receiptReceived && !msg.receiptFailed) {
+        if (msg.sessionId !== currentSessionId) {
+          // Mark as failed
+          msg.receiptFailed = true;
+          localStorage.setItem(messagesKey, JSON.stringify(messages));
+
+          // Update UI
+          const msgDiv = chatWindow.querySelector(`[data-receipt-id="${msg.receiptId}"]`);
+          if (msgDiv) {
+            const rSpan = msgDiv.querySelector('.receipt-indicator');
+            if (rSpan) {
+              rSpan.classList.remove('receipt-circle', 'receipt-spinner');
+              rSpan.classList.add('receipt-x-circle');
+              rSpan.textContent = '✖';
+              rSpan.title = 'Failed to send. Click to resend.';
+              // Add event listener for manual resend
+              rSpan.addEventListener('click', () => {
+                resendFailedMessageLocal(msg.receiptId);
+              }, { once: true });
+            }
+          }
+        }
+      }
+    });
+
+    // Ensure the chat window scrolls to the bottom
+    requestAnimationFrame(() => {
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    });
+
+    isLoadingMessages = false;
+
+    resetUnreadCount(currentConversation);
+    toggleBotCommands();
+  }
+
+  // Append Message to Chat Window
+  function appendMessage(from, text, timestamp, receiptId = null, receiptReceived = false, receiptFailed = false, rawPacket = null) {
+    let displayText = receiptEnabled
+      ? text.replace(/\{[A-Z0-9]{1,5}$/, '').trim()
+      : text.trim();
+
+    if (receiptEnabled && /^ack[A-Z0-9]{1,5}$/.test(displayText)) return; 
+
+    const messageDiv = document.createElement('div');
+    messageDiv.classList.add('message');
+    if (receiptId) {
+      messageDiv.setAttribute('data-receipt-id', receiptId);
+    }
+
+    const header = document.createElement('div');
+    const fromSpan = document.createElement('span');
+    fromSpan.classList.add('from');
+    fromSpan.textContent = from;
+
+    const timestampSpan = document.createElement('span');
+    timestampSpan.classList.add('timestamp');
+    timestampSpan.textContent = ` [${new Date(timestamp).toLocaleString()}]`;
+
+    header.appendChild(fromSpan);
+    header.appendChild(timestampSpan);
+
+    const textP = document.createElement('p');
+    textP.classList.add('mb-0');
+    textP.textContent = displayText;
+
+    if (from === 'You' && receiptId) {
+      if (receiptReceived) {
+        const tickSpan = document.createElement('span');
+        tickSpan.classList.add('receipt-indicator', 'receipt-tick-circle');
+        tickSpan.textContent = '✔';
+        textP.appendChild(tickSpan);
+      }
+      else if (receiptFailed) {
+        const failSpan = document.createElement('span');
+        failSpan.classList.add('receipt-indicator', 'receipt-x-circle');
+        failSpan.textContent = '✖';
+        failSpan.title = 'Click to resend';
+        failSpan.addEventListener('click', () => {
+          resendFailedMessageLocal(receiptId);
+        });
+        textP.appendChild(failSpan);
+      }
+      else {
+        const indicatorSpan = document.createElement('span');
+        indicatorSpan.classList.add('receipt-indicator', 'receipt-circle', 'receipt-spinner');
+        textP.appendChild(indicatorSpan);
+        // Only set up retry logic if rawPacket is present (i.e., message sent in current session)
+        if (rawPacket) {
+          // Removed messageRetryMap.set(...) and setupReceiptTimeout(...) from appendMessage
+          // These are now handled exclusively in sendDirectMessage
+        }
+      }
+    }
+
+    messageDiv.appendChild(header);
+    messageDiv.appendChild(textP);
+    chatWindow.appendChild(messageDiv);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+  }
+
+  // Send Receipt Function
+  function sendReceipt(receiptId, sender) {
+    const receiptMessage = `ack${receiptId}`;
+    const paddedTo = padCallsign(sender);
+    const rawReceiptPacket = `${currentUserCallsign}>APLRG1,WIDE1-1::${paddedTo}:${receiptMessage}`;
+    console.log(`Sending receipt: ${rawReceiptPacket}`);
+    fetch('/api/send/raw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ packet: rawReceiptPacket })
+    })
+    .then(r => {
+      if (r.ok) {
+        console.log('Receipt sent.');
+      } else {
+        console.error('Failed to send receipt:', r.statusText);
+      }
+    })
+    .catch(err => console.error('Error sending receipt:', err));
+  }
+
+  // Handle Receipt Processing
+  function handleReceipt(receiptId) {
+    receiptId = receiptId.trim().toUpperCase();
+    console.log(`Processing receipt for ID: ${receiptId}`);
+    
+    if (messageRetryMap.has(receiptId)) {
+      const messageInfo = messageRetryMap.get(receiptId);
+      
+      if (!messageInfo.isTest) {
+        if (messageInfo.tickSpan) {
+          messageInfo.tickSpan.classList.remove('receipt-circle', 'receipt-spinner');
+          messageInfo.tickSpan.classList.add('receipt-tick-circle');
+          messageInfo.tickSpan.textContent = '✔';
+        }
+      } else {
+        if (messageInfo.button) {
+          messageInfo.button.classList.remove('btn-info');
+          messageInfo.button.classList.add('btn-success');
+          messageInfo.button.textContent = 'Test ✔';
+          messageInfo.button.disabled = false; 
+        }
+      }
+      
+      if (messageInfo.timeoutId) {
+        clearTimeout(messageInfo.timeoutId);
+        console.log(`Cleared timeout for receipt ID: ${receiptId}`);
+      }
+      
+      messageRetryMap.delete(receiptId);
+      displayedReceiptIds.add(receiptId);
+      console.log(`Removed receipt ID: ${receiptId} from messageRetryMap`);
+    }
+
+    markMessageAsReceived(receiptId);
+    
+    // Add [RTT: Xs] with time difference
+    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
+    let messageTimestamp = null;
+    for (const recipient of conversations) {
+      const messagesKey = `messages_${currentUserCallsign}_${recipient}`;
+      const messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+      const message = messages.find(m => m.receiptId === receiptId);
+      if (message) {
+        messageTimestamp = message.timestamp;
+        break;
+      }
+    }
+    if (messageTimestamp) {
+      console.log(`Message Timestamp (Stored): ${messageTimestamp}`);
+      const sentTime = new Date(messageTimestamp);
+      if (isNaN(sentTime)) {
+        console.error(`Invalid sentTime parsed from timestamp: ${messageTimestamp}`);
+        return;
+      }
+      console.log(`Parsed Sent Time: ${sentTime}`);
+      
+      const ackTime = new Date();
+      console.log(`Acknowledgment Time: ${ackTime}`);
+      
+      const diffMilliseconds = ackTime - sentTime;
+      console.log(`Difference in Milliseconds: ${diffMilliseconds}`);
+      
+      const diffSeconds = Math.floor(diffMilliseconds / 1000);
+      const diffDisplay = diffSeconds >=1 ? diffSeconds : 0;
+      console.log(`RTT Calculated: ${diffDisplay}s`);
+      
+      const msgDiv = chatWindow.querySelector(`[data-receipt-id="${receiptId}"]`);
+      if (msgDiv) {
+        const timestampSpan = msgDiv.querySelector('.timestamp');
+        if (timestampSpan) {
+          // Check if the ack time has already been added
+          if (!msgDiv.querySelector('.ack-time')) {
+            const ackSpan = document.createElement('span');
+            ackSpan.classList.add('ack-time');
+            ackSpan.textContent = ` [RTT: ${diffDisplay}s]`;
+            timestampSpan.parentNode.insertBefore(ackSpan, timestampSpan.nextSibling);
+          }
+        }
+      }
+    } else {
+      console.error(`No message found with receiptId: ${receiptId}`);
+    }
+  }
+
+  // Mark Message as Received Across All Conversations
+  function markMessageAsReceived(receiptId) {
+    if (!currentUserCallsign) return;
+    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
+    let found = false;
+
+    conversations.forEach(recipient => {
+      const messagesKey = `messages_${currentUserCallsign}_${recipient}`;
+      let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+      const idx = messages.findIndex(msg => msg.receiptId === receiptId && !msg.receiptReceived);
+      if (idx !== -1) {
+        messages[idx].receiptReceived = true;
+        messages[idx].receiptFailed = false;
+        localStorage.setItem(messagesKey, JSON.stringify(messages));
+        console.log(`LocalStorage updated: message ${receiptId} => receiptReceived=true in conversation ${recipient}`);
+
+        // If the conversation is currently active, update the UI
+        if (recipient === currentConversation) {
+          const msgDiv = chatWindow.querySelector(`[data-receipt-id="${receiptId}"]`);
+          if (msgDiv) {
+            const rSpan = msgDiv.querySelector('.receipt-indicator');
+            if (rSpan) {
+              rSpan.classList.remove('receipt-circle', 'receipt-spinner');
+              rSpan.classList.add('receipt-tick-circle');
+              rSpan.textContent = '✔';
+            }
+          }
+        }
+
+        found = true;
+      }
+    });
+
+    if (!found) {
+      console.warn(`No message found with receiptId: ${receiptId}`);
+    }
+  }
+
+  // Mark Message as Failed Across All Conversations
+  function markMessageAsFailed(receiptId) {
+    if (!currentUserCallsign) return;
+    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
+
+    conversations.forEach(recipient => {
+      const messagesKey = `messages_${currentUserCallsign}_${recipient}`;
+      let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+      const idx = messages.findIndex(msg => msg.receiptId === receiptId && !msg.receiptReceived);
+      if (idx !== -1) {
+        messages[idx].receiptFailed = true;
+        localStorage.setItem(messagesKey, JSON.stringify(messages));
+        console.log(`LocalStorage updated: message ${receiptId} => receiptFailed=true in conversation ${recipient}`);
+
+        // If the conversation is currently active, update the UI
+        if (recipient === currentConversation) {
+          const msgDiv = chatWindow.querySelector(`[data-receipt-id="${receiptId}"]`);
+          if (msgDiv) {
+            const rSpan = msgDiv.querySelector('.receipt-indicator');
+            if (rSpan) {
+              rSpan.classList.remove('receipt-circle','receipt-spinner');
+              rSpan.classList.add('receipt-x-circle');
+              rSpan.textContent = '✖';
+              rSpan.title = 'Click to resend';
+              rSpan.addEventListener('click', () => {
+                resendFailedMessageLocal(receiptId);
+              }, { once: true });
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // Compute Hash for Duplicate Detection
+  function computeHash(idString, text) {
+    const cleanedText = text.replace(/\{[A-Z0-9]{1,5}/g, '').replace(/ack[A-Z0-9]{1,5}/g, '').trim();
+    const combined = `${idString}-${cleanedText}`;
+    return CryptoJS.SHA256(combined).toString(CryptoJS.enc.Hex);
+  }
+
+  // Check for Duplicate Messages
+  function isDuplicateMessage(senderPlusMsgNo, _, text) {
+    const hash = computeHash(senderPlusMsgNo, text);
+    const hashesKey = `hashes_${currentUserCallsign}_${senderPlusMsgNo}`;
+    let hashes = JSON.parse(localStorage.getItem(hashesKey)) || [];
+    if (hashes.includes(hash)) {
+      return true;
+    }
+    hashes.push(hash);
+    localStorage.setItem(hashesKey, JSON.stringify(hashes));
+    return false;
+  }
+
+  // Resend Message Function
+  function resendMessage(rawPacket) {
+    console.log(`Resending message: ${rawPacket}`);
+    fetch('/api/send/raw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ packet: rawPacket })
+    })
+    .then(r => {
+      if (r.ok) console.log(`Successfully resent: ${rawPacket}`);
+      else console.error('Failed to resend:', r.statusText);
+    })
+    .catch(err => console.error('Error resending:', err));
+  }
+
+  // Setup Receipt Timeout with 60-Second Interval
+function setupReceiptTimeout(receiptId) {
+  if (!messageRetryMap.has(receiptId)) return;
+  const messageInfo = messageRetryMap.get(receiptId);
+
+  // Optional: if we want to ensure there’s only one active timer at a time,
+  // we can clear any previous one now. (Often good practice if you might call
+  // setupReceiptTimeout(...) more than once for the same message.)
+  if (messageInfo.timeoutId) {
+    clearTimeout(messageInfo.timeoutId);
+    messageInfo.timeoutId = null;
+  }
+
+  const timeoutId = setTimeout(() => {
+    // If the message was acked or removed meanwhile, skip everything
+    if (!messageRetryMap.has(receiptId)) {
+      console.log(`Timer fired for ${receiptId} but it's no longer in the map (likely acked). Doing nothing.`);
+      return;
+    }
+
+    // Re-fetch the current info from the map (in case it was updated)
+    const currentInfo = messageRetryMap.get(receiptId);
+
+    // Clear the old ID so we can set a fresh timeout if needed
+    currentInfo.timeoutId = null;
+
+    currentInfo.retries += 1;
+    console.log(`No receipt for ${receiptId}; retry #${currentInfo.retries}`);
+
+    if (currentInfo.retries > MAX_RECEIPT_RESENDS) {
+      console.log(`Max resends for ${receiptId} reached. Marking as failed.`);
+      markMessageAsFailed(receiptId);  // Your own function to update UI, etc.
+      messageRetryMap.delete(receiptId);
+      displayedReceiptIds.add(receiptId); // If you wish to keep track of “seen” IDs
+    } else {
+      // Perform the actual resend
+      resendMessage(currentInfo.message);
+
+      // Schedule the *next* retry once more
+      setupReceiptTimeout(receiptId);
+    }
+  }, 60000); // 60 seconds, or adjust as desired
+
+  // Record this new timer ID in the map
+  messageInfo.timeoutId = timeoutId;
+  messageRetryMap.set(receiptId, messageInfo);
+}
+
+  // Resend Failed Message Function
+  function resendFailedMessage(oldReceiptId, messageInfo) {
+    console.log(`Resending failed message with old receipt ID: ${oldReceiptId}`);
+    const newReceiptId = generateReceiptId();
+    displayedReceiptIds.delete(oldReceiptId);
+    messageRetryMap.delete(oldReceiptId);
+
+    const oldPacket = messageInfo.message;
+    if (!oldPacket) {
+      console.error(`Cannot resend message for receipt ID ${oldReceiptId} because rawPacket is null.`);
+      return;
+    }
+
+    // **Adjusted Regex to account for optional trailing spaces**
+    const receiptIdPattern = new RegExp(`\\{${oldReceiptId}\\s*$`);
+    const updatedPacket = oldPacket.replace(receiptIdPattern, `{${newReceiptId}`);
+
+    if (currentUserCallsign && currentConversation) {
+      const messagesKey = `messages_${currentUserCallsign}_${currentConversation}`;
+      let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+      const idx = messages.findIndex(m => m.receiptId === oldReceiptId);
+      if (idx !== -1) {
+        messages[idx].receiptId = newReceiptId;
+        messages[idx].receiptReceived = false;
+        messages[idx].receiptFailed = false;
+        messages[idx].rawPacket = updatedPacket;
+        messages[idx].sessionId = currentSessionId; // Update sessionId
+        localStorage.setItem(messagesKey, JSON.stringify(messages));
+        console.log(`Updated message ${oldReceiptId} to new receiptId ${newReceiptId} in localStorage.`);
+      }
+    }
+
+    if (messageInfo.tickSpan) {
+      messageInfo.tickSpan.classList.remove('receipt-x-circle','receipt-tick-circle');
+      messageInfo.tickSpan.classList.add('receipt-circle','receipt-spinner');
+      messageInfo.tickSpan.textContent = '';
+      messageInfo.tickSpan.removeAttribute('title');
+    }
+
+    // Update messageRetryMap with the newReceiptId
+    messageRetryMap.set(newReceiptId, {
+      tickSpan: messageInfo.tickSpan,
+      retries: 0,
+      timeoutId: null,
+      message: updatedPacket,
+      isTest: false,
+      sessionId: currentSessionId
+    });
+
+    console.log(`Resending updated packet with new receipt ID: ${newReceiptId}`);
+    resendMessage(updatedPacket);
+    setupReceiptTimeout(newReceiptId);
+  }
+
+  // Manual Resend Function
+  function resendFailedMessageLocal(oldReceiptId) {
+    console.log(`Manual resend requested for ID=${oldReceiptId}`);
+    if (!currentUserCallsign || !currentConversation) return;
+
+    const messagesKey = `messages_${currentUserCallsign}_${currentConversation}`;
+    let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+    const idx = messages.findIndex(m => m.receiptId === oldReceiptId);
+    if (idx === -1) {
+      console.log("Could not find old message in localStorage. Aborting resend.");
+      return;
+    }
+    const oldMsg = messages[idx];
+    if (!oldMsg.rawPacket) {
+      console.log("No rawPacket stored. Aborting resend.");
+      return;
+    }
+
+    const newReceiptId = generateReceiptId();
+
+    // **Adjusted Regex to account for optional trailing spaces**
+    const receiptIdPattern = new RegExp(`\\{${oldReceiptId}\\s*$`);
+    const updatedPacket = oldMsg.rawPacket.replace(receiptIdPattern, `{${newReceiptId}`);
+
+    messages[idx].receiptId = newReceiptId;
+    messages[idx].receiptReceived = false;
+    messages[idx].receiptFailed = false;
+    messages[idx].rawPacket = updatedPacket;
+    messages[idx].sessionId = currentSessionId; // Update sessionId
+    localStorage.setItem(messagesKey, JSON.stringify(messages));
+
+    const msgDiv = chatWindow.querySelector(`[data-receipt-id="${oldReceiptId}"]`);
+    if (msgDiv) {
+      msgDiv.setAttribute('data-receipt-id', newReceiptId);
+      const rSpan = msgDiv.querySelector('.receipt-indicator');
+      if (rSpan) {
+        rSpan.classList.remove('receipt-x-circle','receipt-tick-circle');
+        rSpan.classList.add('receipt-circle','receipt-spinner');
+        rSpan.textContent = '';
+        rSpan.removeAttribute('title');
+      }
+
+      // Update messageRetryMap with the newReceiptId
+      messageRetryMap.set(newReceiptId, {
+        tickSpan: rSpan,
+        retries: 0,
+        timeoutId: null,
+        message: updatedPacket,
+        isTest: false,
+        sessionId: currentSessionId
+      });
+      setupReceiptTimeout(newReceiptId);
+      console.log(`Manual resend: Updated packet with new receipt ID: ${newReceiptId}`);
+    }
+
+    resendMessage(updatedPacket);
+  }
+
+  // Store Incoming Message
+  function storeIncomingMessage(sender, messageContent, timestamp) {
+    const messagesKey = `messages_${currentUserCallsign}_${sender}`;
+    let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+    messages.push({
+      from: sender,
+      text: messageContent,
+      timestamp: timestamp, // ISO string
+      receiptId: null,
+      receiptReceived: false,
+      receiptFailed: false,
+      rawPacket: null
+    });
+    localStorage.setItem(messagesKey, JSON.stringify(messages));
+  }
+
+  // Add Conversation if Not Exists
+  function addConversationIfNotExists(sender) {
+    const conversationsKey = `conversations_${currentUserCallsign}`;
+    let conversations = JSON.parse(localStorage.getItem(conversationsKey)) || [];
+    if (!conversations.includes(sender)) {
+      conversations.push(sender);
+      localStorage.setItem(conversationsKey, JSON.stringify(conversations));
+      fetchSymbolIfNeeded(sender);
+      loadConversations();
+    }
+  }
+
+  // Event Listeners for UI Interactions
+  addUserCallsignBtn.addEventListener('click', () => {
+    addUserCallsignModal.show();
+  });
+
+  addUserCallsignForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const newCallsignInput = document.getElementById('newUserCallsign');
+    const newCallsign = newCallsignInput.value.trim().toUpperCase();
+    const callsignPattern = /^[A-Z0-9-]{3,15}$/;
+    if (!callsignPattern.test(newCallsign)) {
+      alert('Invalid callsign format.');
+      return;
+    }
+    if (userCallsigns.includes(newCallsign)) {
+      alert('Callsign already exists.');
+      return;
+    }
+    userCallsigns.push(newCallsign);
+    localStorage.setItem('userCallsigns', JSON.stringify(userCallsigns));
+    populateUserCallsignDropdown();
+    currentUserCallsign = newCallsign;
+    userCallsignSelect.value = newCallsign;
+    localStorage.setItem('lastSelectedCallsign', newCallsign); // Save last selected callsign
+    addUserCallsignModal.hide();
+    newCallsignInput.value = '';
+    loadConversations();
+    initializeRetryLogicForCurrentUser();
+  });
+
+  userCallsignSelect.addEventListener('change', () => {
+    currentUserCallsign = userCallsignSelect.value;
+    localStorage.setItem('lastSelectedCallsign', currentUserCallsign);
+    loadConversations();
+    chatWindow.innerHTML = '';
+    toggleBotCommands();
+    testBtn.disabled = false;
+    testBtn.textContent = 'Test';
+    testBtn.classList.remove('btn-success', 'btn-danger');
+    testBtn.classList.add('btn-info');
+    // Initialize retry logic for the selected user's conversations
+    initializeRetryLogicForCurrentUser();
+
+    // Handle 'conversation' query parameter after user selects a callsign
+    const urlParams = new URLSearchParams(window.location.search);
+    const conversationParam = urlParams.get('conversation');
+    if (conversationParam) {
+      const normalizedCallsign = conversationParam.trim().toUpperCase();
+      if (/^[A-Z0-9-]{3,15}$/.test(normalizedCallsign)) {
+        addConversationIfNotExists(normalizedCallsign);
+        currentConversation = normalizedCallsign;
+        loadConversations();
+        loadMessages();
+      }
+    }
+  });
+
+  addConversationBtn.addEventListener('click', () => {
+    if (!currentUserCallsign) {
+      alert('Select your callsign first.');
+      return;
+    }
+    addConversationModal.show();
+  });
+
+  clearConversationBtn.addEventListener('click', () => {
+    if (!currentConversation) {
+      alert('Select a conversation first.');
+      return;
+    }
+    localStorage.removeItem(`messages_${currentUserCallsign}_${currentConversation}`);
+    localStorage.removeItem(`hashes_${currentUserCallsign}_${currentConversation}`);
+    chatWindow.innerHTML = '';
+  });
+
+  botBtn.addEventListener('click', () => {
+    if (!currentUserCallsign) {
+      alert('Please select your callsign first.');
+      return;
+    }
+    const botCallsign = "MM3NDH-13";
+    const conversationsKey = `conversations_${currentUserCallsign}`;
+    let conversations = JSON.parse(localStorage.getItem(conversationsKey)) || [];
+    if (!conversations.includes(botCallsign)) {
+      conversations.push(botCallsign);
+      localStorage.setItem(conversationsKey, JSON.stringify(conversations));
+      // Fetch symbol for Bot
+      fetchSymbolIfNeeded(botCallsign);
+    }
+    currentConversation = botCallsign;
+    loadConversations();
+    loadMessages();
+  });
+
+  testBtn.addEventListener('click', () => {
+    if (!currentUserCallsign) {
+      alert('Select your callsign first.');
+      return;
+    }
+    testBtn.disabled = true;
+    const receiptId = generateReceiptId();
+    const testMessageText = `?PING{${receiptId}`;
+    const testRecipient = 'MM3NDH-13';
+    const paddedTo = padCallsign(testRecipient);
+    const rawPacket = `${currentUserCallsign}>APLRG1,WIDE1-1::${paddedTo}:${testMessageText}`;
+    fetch('/api/send/raw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ packet: rawPacket })
+    })
+    .then(response => {
+      if (response.ok) {
+        testBtn.classList.remove('btn-info','btn-success','btn-danger');
+        testBtn.classList.add('btn-info');
+        testBtn.textContent = 'Test 🕒';
+        // **Directly set up retry logic without relying on tickSpan**
+        messageRetryMap.set(receiptId, {
+          button: testBtn, // Reference to the Test button
+          retries: 0, 
+          timeoutId: null, 
+          message: rawPacket, 
+          isTest: true,
+          sessionId: currentSessionId
+        });
+        setupReceiptTimeout(receiptId);
+      } else {
+        alert('Failed to send Test PING.');
+        testBtn.disabled = false;
+      }
+    })
+    .catch(error => {
+      alert('Error sending Test PING.');
+      testBtn.disabled = false;
+    });
+  });
+
+  addConversationForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const recipientInput = document.getElementById('recipientCallsign');
+    const recipientCallsign = recipientInput.value.trim().toUpperCase();
+    const callsignPattern = /^[A-Z0-9-]{3,15}$/;
+    if (!callsignPattern.test(recipientCallsign)) {
+      alert('Invalid callsign format.');
+      return;
+    }
+    const conversationsKey = `conversations_${currentUserCallsign}`;
+    let conversations = JSON.parse(localStorage.getItem(conversationsKey)) || [];
+    if (conversations.includes(recipientCallsign)) {
+      alert('Conversation already exists.');
+      return;
+    }
+    conversations.push(recipientCallsign);
+    localStorage.setItem(conversationsKey, JSON.stringify(conversations));
+    fetchSymbolIfNeeded(recipientCallsign);
+    
+    // **Set the new conversation as active**
+    currentConversation = recipientCallsign;
+    
+    loadConversations();
+    loadMessages();
+    addConversationModal.hide();
+    recipientInput.value = '';
+    // Initialize retry logic for the new conversation
+    initializeRetryLogicForConversation(recipientCallsign);
+  });
+
+  // Handle Clicks on Conversations List
+  conversationsList.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (!li) return;
+    const recipientCallsign = li.dataset.recipient;
+    if (e.target.classList.contains('remove-conversation-btn')) {
+      e.stopPropagation();
+      const promptName = callsignDisplayName(recipientCallsign);
+      const confirmDeletion = confirm(`Remove conversation with ${promptName}?`);
+      if (!confirmDeletion) return;
+      const conversationsKey = `conversations_${currentUserCallsign}`;
+      let conversations = JSON.parse(localStorage.getItem(conversationsKey)) || [];
+      conversations = conversations.filter(c => c !== recipientCallsign);
+      localStorage.setItem(conversationsKey, JSON.stringify(conversations));
+      localStorage.removeItem(`messages_${currentUserCallsign}_${recipientCallsign}`);
+      localStorage.removeItem(`hashes_${currentUserCallsign}_${recipientCallsign}`);
+      if (unreadCounts[recipientCallsign]) {
+        delete unreadCounts[callsign];
+        localStorage.setItem('unreadCounts', JSON.stringify(unreadCounts));
+      }
+      li.remove();
+      if (currentConversation === recipientCallsign) {
+        currentConversation = null;
+        chatWindow.innerHTML = '';
+        toggleBotCommands();
+      }
+      return;
+    }
+    if (li.dataset.recipient) {
+      const selected = li.dataset.recipient;
+      if (currentConversation !== selected) {
+        currentConversation = selected;
+        Array.from(conversationsList.children).forEach(item => {
+          item.classList.toggle('active', item.dataset.recipient === selected);
+        });
+        loadMessages();
+      }
+    }
+  });
+
+  // Helper to Display Messages
+  function updateMessageDisplay() {
+    if (!currentUserCallsign || !currentConversation) return;
+    const messagesKey = `messages_${currentUserCallsign}_${currentConversation}`;
+    const messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+    chatWindow.innerHTML = '';
+    isLoadingMessages = true;
+    messages.forEach(msg => {
+      appendMessage(
+        msg.from === currentUserCallsign ? 'You' : callsignDisplayName(msg.from),
+        msg.text,
+        msg.timestamp,
+        msg.receiptId || null,
+        msg.receiptReceived || false,
+        msg.receiptFailed || false,
+        msg.rawPacket || null // Pass rawPacket here
+      );
+    });
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+    isLoadingMessages = false;
+    toggleBotCommands();
+  }
+
+  // Send Direct Message Function
+  async function sendDirectMessage(messageText) {
+    if (!currentUserCallsign) {
+      alert('Please select your callsign first.');
+      return;
+    }
+    if (!currentConversation) {
+      alert('Please select a conversation first.');
+      return;
+    }
+    let textToSend = messageText.trim();
+    if (!textToSend) return;
+
+    let receiptId = null;
+    if (receiptEnabled) {
+      receiptId = generateReceiptId();
+      textToSend += `{${receiptId}`; // Append only open brace
+    }
+    const paddedTo = padCallsign(currentConversation);
+    const rawPacket = `${currentUserCallsign}>APLRG1,WIDE1-1::${paddedTo}:${textToSend}`;
+    try {
+      const response = await fetch('/api/send/raw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packet: rawPacket })
+      });
+      if (response.ok) {
+        const timestamp = new Date().toISOString(); // ISO string
+        const messagesKey = `messages_${currentUserCallsign}_${currentConversation}`;
+        let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+        messages.push({
+          from: currentUserCallsign,
+          text: textToSend,
+          timestamp: timestamp, // ISO string
+          receiptId: receiptId,
+          receiptReceived: false,
+          receiptFailed: false,
+          rawPacket: rawPacket,
+          sessionId: currentSessionId // Attach sessionId
+        });
+        localStorage.setItem(messagesKey, JSON.stringify(messages));
+        appendMessage('You', textToSend, timestamp, receiptId, false, false, rawPacket); // Pass rawPacket here
+        // Setup retry logic **only here in sendDirectMessage**
+        if (receiptId) {
+          const tickSpan = chatWindow.querySelector(`[data-receipt-id="${receiptId}"] .receipt-indicator`);
+          if (tickSpan) {
+            messageRetryMap.set(receiptId, {
+              tickSpan: tickSpan,
+              retries: 0,
+              timeoutId: null,
+              message: rawPacket,
+              isTest: false,
+              sessionId: currentSessionId
+            });
+            setupReceiptTimeout(receiptId);
+          }
+        }
+      } else {
+        alert('Failed to send message.');
+      }
+    } catch (error) {
+      alert('Error sending message.');
+      console.error(error);
+    }
+  }
+
+  // Handle Send Message Form Submission
+  sendMessageForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const outText = messageInput.value.trim();
+    if (outText) {
+      sendDirectMessage(outText);
+      messageInput.value = '';
+    }
+  });
+
+  // Bot Command Buttons
+  btnSeen.addEventListener('click', () => sendDirectMessage('?SEEN'));
+  btnLast.addEventListener('click', () => sendDirectMessage('?LAST'));
+  btnHelp.addEventListener('click', () => sendDirectMessage('?HELP'));
+
+  // Handle Incoming APRS Packets
+  socket.on('aprs_packet', (data) => {
+    console.log('=== Packet Received ===', data);
+    if (data.format === 'beacon') {
+      handleBeaconPacket(data);
+    } else if (data.format === 'message') {
+      handleMessagePacket(data);
+    }
+  });
+
+  // Handle Beacon Packets
+  function handleBeaconPacket(data) {
+    try {
+      let sourceCallsign = data.from.toUpperCase();
+      let destinationCallsign = null;
+      let messageText = null;
+
+      const sourceRegex = /^(\w+-\d+)>/;
+      const sourceMatch = data.text.match(sourceRegex);
+      if (sourceMatch) {
+        sourceCallsign = sourceMatch[1].toUpperCase();
+      }
+
+      if (data.text.includes("::")) {
+        const regex = /^[^:]*::(\w+-\d+)\s*:\s*(.+)$/;
+        const match = data.text.match(regex);
+        if (match) {
+          destinationCallsign = match[1].toUpperCase();
+          messageText = match[2].trim();
+        }
+      } else if (data.text.startsWith(":")) {
+        const regex = /^:(\w+-\d+):\s*(.+)$/;
+        const match = data.text.match(regex);
+        if (match) {
+          destinationCallsign = match[1].toUpperCase();
+          messageText = match[2].trim();
+        }
+      } else {
+        return;
+      }
+
+      const timestamp = new Date(data.timestamp).toISOString(); // ISO string
+      if (sourceCallsign === currentUserCallsign) {
+        return;
+      }
+      const isIncoming = destinationCallsign === currentUserCallsign;
+      if (isIncoming) {
+        let receiptId = null;
+        const sTagMatchContent = messageText.match(/\{([A-Z0-9]{1,5})$/);
+        if (sTagMatchContent && receiptEnabled) {
+          receiptId = sTagMatchContent[1].toUpperCase();
+          messageText = messageText.replace(/\{[A-Z0-9]{1,5}$/, '').trim();
+          const localDate = new Date();
+          const diffSeconds = (new Date(timestamp) - localDate) / 1000;
+          if (diffSeconds <= 5) {
+            sendReceipt(receiptId, sourceCallsign);
+            let resendCount = processedReceiptMap.get(receiptId) || 0;
+            if (resendCount < MAX_RECEIPT_RESENDS) {
+              processedReceiptMap.set(receiptId, resendCount + 1);
+            }
+          }
+        }
+
+        const receiptMatch = messageText.match(/^ack([A-Z0-9]{1,5})$/);
+        if (receiptMatch && receiptEnabled) {
+          const foundId = receiptMatch[1].toUpperCase();
+          handleReceipt(foundId);
+          return; 
+        }
+
+        if (receiptId && displayedReceiptIds.has(receiptId)) {
+          console.log(`Duplicate Beacon with receiptId ${receiptId}; skipping.`);
+          return;
+        }
+        if (!receiptId) {
+          if (isDuplicateMessage(sourceCallsign, '', messageText)) {
+            console.log(`Duplicate Beacon from ${sourceCallsign} (no receiptId); skipping.`);
+            return;
+          }
+        }
+
+        if (currentConversation === sourceCallsign) {
+          appendMessage(callsignDisplayName(sourceCallsign), messageText, timestamp, receiptId, false, false, null); // rawPacket is null for incoming
+        }
+        if (receiptId) displayedReceiptIds.add(receiptId);
+
+        // Store the incoming message
+        storeIncomingMessage(sourceCallsign, messageText, timestamp);
+        addConversationIfNotExists(sourceCallsign);
+
+        // Increment unread count if not in active conversation
+        if (currentConversation !== sourceCallsign) {
+          incrementUnreadCount(sourceCallsign);
+        }
+      }
+    } catch (err) {
+      console.error('Error in handleBeaconPacket:', err);
+    }
+  }
+
+  // Handle Message Packets
+  function handleMessagePacket(data) {
+    const {
+      from,
+      addresse,
+      msgNo,
+      timestamp,
+      response
+    } = data;
+    let { message_text } = data;
+
+    if (!message_text && response === 'ack' && msgNo) {
+      message_text = `ack${msgNo}`;
+      console.log(`Synthesizing message_text = "${message_text}" from ack+msgNo=${msgNo}`);
+    }
+    if (typeof message_text === 'undefined') {
+      console.log("Packet missing message_text; skipping handleMessagePacket.");
+      return;
+    }
+
+    const messageContent = message_text;
+    const sender = from.toUpperCase();
+    const recipient = addresse.toUpperCase();
+
+    if (sender === currentUserCallsign) {
+      return;
+    }
+
+    console.log(`Parsed MSG - from ${sender}, to ${recipient}, msgNo=${msgNo}, response=${response}, content="${messageContent}"`);
+
+    if (recipient === currentUserCallsign) {
+      let receiptId = null;
+      if (msgNo && response !== 'ack') {
+        receiptId = msgNo.toUpperCase();
+        console.log(`Sending ack${receiptId} to ${sender}`);
+        sendReceipt(receiptId, sender);
+      }
+
+      const receiptMatch = messageContent.match(/^ack([A-Z0-9]{1,5})$/);
+      if (receiptMatch && receiptEnabled) {
+        handleReceipt(receiptMatch[1].toUpperCase());
+        return;
+      }
+
+      let displayText = messageContent;
+      const sTagMatch = messageContent.match(/\{([A-Z0-9]{1,5})$/);
+      if (sTagMatch && receiptEnabled) {
+        receiptId = sTagMatch[1].toUpperCase();
+        displayText = displayText.replace(/\{[A-Z0-9]{1,5}$/, '').trim();
+      }
+
+      if (receiptId && displayedReceiptIds.has(receiptId)) {
+        console.log(`Duplicate message with receiptId ${receiptId}; skipping display.`);
+        return;
+      }
+      if (!receiptId) {
+        if (isDuplicateMessage(sender + (msgNo || ''), '', displayText)) {
+          console.log(`Duplicate message from ${sender} (no receiptId); skipping.`);
+          return;
+        }
+      }
+
+      if (currentConversation === sender) {
+        appendMessage(callsignDisplayName(sender), displayText, timestamp, receiptId, false, false, null); // rawPacket is null for incoming
+      }
+      if (receiptId) displayedReceiptIds.add(receiptId);
+
+      // Store the incoming message
+      storeIncomingMessage(sender, messageContent, timestamp);
+      addConversationIfNotExists(sender);
+
+      // Increment unread count if not in active conversation
+      if (currentConversation !== sender) {
+        incrementUnreadCount(sender);
+      }
+    }
+  }
+
+  // Populate User Callsign Dropdown on Load
+  populateUserCallsignDropdown();
+  if (currentUserCallsign) {
+    userCallsignSelect.value = currentUserCallsign;
+    loadConversations();
+    // Initialize retry logic for the selected user's conversations on page load
+    initializeRetryLogicForCurrentUser();
+
+    // Handle 'conversation' query parameter after initial load
+    const urlParams = new URLSearchParams(window.location.search);
+    const conversationParam = urlParams.get('conversation');
+    if (conversationParam) {
+      const normalizedCallsign = conversationParam.trim().toUpperCase();
+      if (/^[A-Z0-9-]{3,15}$/.test(normalizedCallsign)) {
+        addConversationIfNotExists(normalizedCallsign);
+        currentConversation = normalizedCallsign;
+        loadConversations();
+        loadMessages();
+      }
+    }
+  }
+
+  // Initialize Retry Logic for Current User's Conversations
+  function initializeRetryLogicForCurrentUser() {
+    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
+    conversations.forEach(recipient => {
+      const messagesKey = `messages_${currentUserCallsign}_${recipient}`;
+      const messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+      messages.forEach(msg => {
+        if (msg.from === currentUserCallsign && msg.receiptId && !msg.receiptReceived && !msg.receiptFailed) {
+          // Do not set up retry for loaded messages to prevent resending on page refresh
+          // Only messages sent in the current session have retry logic
+        }
+      });
+    });
+  }
+
+  // Initialize Retry Logic for a Specific Conversation
+  function initializeRetryLogicForConversation(recipientCallsign) {
+    const messagesKey = `messages_${currentUserCallsign}_${recipientCallsign}`;
+    const messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+    messages.forEach(msg => {
+      if (msg.from === currentUserCallsign && msg.receiptId && !msg.receiptReceived && !msg.receiptFailed) {
+        // Do not set up retry for loaded messages to prevent resending on page refresh
+        // Only new messages sent in the current session will have retry logic
+      }
+    });
+  }
+
+  // Initialize Unread Counts UI
+  function initializeUnreadCountsUI() {
+    Object.keys(unreadCounts).forEach(callsign => {
+      updateUnreadCountUI(callsign);
+    });
+  }
+  initializeUnreadCountsUI();
+
+  // Prevent Resending Old Messages
+  function initializeGlobalRetryLogic() {
+    // No longer initializing retry logic for loaded messages
+    // This prevents resending old messages upon page refresh
+  }
+  initializeGlobalRetryLogic();
+
+  // Delete Button Functionality
+  deleteBtn.addEventListener('click', () => {
+    if (!currentUserCallsign) {
+      alert('No callsign selected.');
+      return;
+    }
+    const confirmDeletion = confirm(`Are you sure you want to delete the callsign "${currentUserCallsign}" and all its conversation history? This action cannot be undone.`);
+    if (!confirmDeletion) return;
+    
+    const deletedCallsign = currentUserCallsign;
+    
+    // Remove from userCallsigns
+    userCallsigns = userCallsigns.filter(c => c !== deletedCallsign);
+    localStorage.setItem('userCallsigns', JSON.stringify(userCallsigns));
+    
+    // Remove lastSelectedCallsign if it was the deleted one
+    const lastSelectedCallsign = localStorage.getItem('lastSelectedCallsign');
+    if (lastSelectedCallsign === deletedCallsign) {
+      if (userCallsigns.length > 0) {
+        const newSelectedCallsign = userCallsigns[0];
+        localStorage.setItem('lastSelectedCallsign', newSelectedCallsign);
+        currentUserCallsign = newSelectedCallsign;
+      } else {
+        localStorage.removeItem('lastSelectedCallsign');
+        currentUserCallsign = null;
+      }
+    }
+    
+    // Remove localStorage items related to the deleted callsign
+    Object.keys(localStorage).forEach(key => {
+      if (key === `conversations_${deletedCallsign}` ||
+          key.startsWith(`messages_${deletedCallsign}_`) ||
+          key === `symbolImage_${deletedCallsign}`) {
+        localStorage.removeItem(key);
+      }
+    });
+    
+    // **Clear any active timeouts related to the deleted callsign**
+    messageRetryMap.forEach((info, id) => {
+      if (id.startsWith(deletedCallsign)) {
+        if (info.timeoutId) {
+          clearTimeout(info.timeoutId);
+        }
+        messageRetryMap.delete(id);
+      }
+    });
+
+    // Refresh the dropdown
+    populateUserCallsignDropdown();
+    
+    // If a new callsign is selected, update the UI accordingly
+    if (currentUserCallsign) {
+      userCallsignSelect.value = currentUserCallsign;
+      loadConversations();
+      loadMessages();
+    } else {
+      // No callsigns left
+      chatWindow.innerHTML = '';
+      conversationsList.innerHTML = '';
+    }
+    
+    alert(`Callsign "${deletedCallsign}" and its conversation history have been deleted.`);
+  });
+
+});
+</script>
+</body>
+</html>
+

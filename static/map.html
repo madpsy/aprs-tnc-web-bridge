@@ -1,0 +1,1970 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>APRS Map</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- LeafletJS CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <style>
+        /* Adjust map height to leave space for top form */
+        #map {
+            height: 80vh;
+            width: 100%;
+        }
+        
+        /* Style for the station label */
+        .station-label {
+            font-weight: bold;
+            background-color: #f9f9f9;
+            padding: 2px 6px;
+            border-radius: 4px;
+            border-width: 0px;
+            font-size: 12px;
+        }
+
+        /* Styles for the JSON payload box */
+        #json-payload-box {
+            position: fixed; 
+            bottom: 20px;
+            left: 20px;
+            width: 300px;
+            max-height: 300px;
+            overflow-y: auto;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+            z-index: 1000;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #json-payload-box .close-btn {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        .json-entry {
+            margin-bottom: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 10px;
+        }
+        .json-entry:last-child {
+            border-bottom: none;
+        }
+        .json-entry .timestamp {
+            font-size: 12px;
+            color: #bbb;
+            margin-bottom: 5px;
+        }
+
+        /* Styles for the raw data modal */
+        #raw-data-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            padding: 20px;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #raw-data-modal .modal-content {
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 700px;
+            position: relative;
+            max-height: 80%;
+            overflow-y: auto;
+            box-sizing: border-box;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+        }
+        #raw-data-modal .close-modal {
+            position: absolute;
+            top: 15px;
+            right: 20px;
+            cursor: pointer;
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        .view-raw-link {
+            color: #007BFF;
+            text-decoration: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .view-raw-link:hover {
+            text-decoration: underline;
+        }
+        .send-message {
+            color: #007BFF;
+            text-decoration: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .send-message:hover {
+            text-decoration: underline;
+        }
+
+        #ws-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background-color: red;
+            border: 2px solid #fff;
+            z-index: 1500;
+            transition: background-color 0.3s ease;
+        }
+
+        #control-panel {
+            position: absolute;
+            bottom: 0px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 5px;
+            border-radius: 10px;
+            z-index: 1600;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            text-align: center;
+        }
+        #control-panel label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+        }
+        #control-panel input[type="checkbox"] {
+            transform: scale(1.2);
+        }
+        #control-panel button {
+            padding: 8px 12px;
+            font-size: 14px;
+            cursor: pointer;
+            background-color: #28a745;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            transition: background-color 0.3s ease;
+            font-weight: bold;
+        }
+        #control-panel button:hover {
+            background-color: #218838;
+        }
+
+        #json-reopen-marker {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: none;
+            z-index: 1001;
+            font-size: 14px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            transition: background-color 0.3s ease;
+        }
+        #json-reopen-marker:hover {
+            background-color: rgba(0, 0, 0, 0.9);
+        }
+
+        /* Telemetry Modal */
+        #telemetry-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2500;
+            padding: 20px;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #telemetry-modal .modal-content {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 10px;
+            width: 95%;
+            max-width: 700px;
+            position: relative;
+            max-height: 80%;
+            overflow-y: auto;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        #telemetry-modal .close-modal {
+            position: absolute;
+            top: 20px;
+            right: 25px;
+            cursor: pointer;
+            font-size: 28px;
+            font-weight: bold;
+            color: #333;
+        }
+        #telemetry-modal h2 {
+            margin-top: 0;
+            text-align: center;
+            color: #007BFF;
+        }
+        #telemetry-form {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .telemetry-channel {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+            position: relative; /* For the delete button */
+        }
+        .telemetry-channel label {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .telemetry-channel input[type="text"],
+        .telemetry-channel input[type="number"] {
+            padding: 8px 10px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            width: 100%;
+            box-sizing: border-box;
+            transition: border-color 0.3s ease;
+        }
+        .telemetry-channel input[type="text"]:focus,
+        .telemetry-channel input[type="number"]:focus {
+            border-color: #007BFF;
+            outline: none;
+        }
+        .telemetry-channel input[type="checkbox"] {
+            transform: scale(1.2);
+            margin-right: 8px;
+            cursor: pointer;
+        }
+        .delete-channel-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: transparent;
+            border: none;
+            color: #dc3545;
+            font-size: 18px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .delete-channel-btn:hover {
+            color: #a71d2a;
+        }
+        #telemetry-submit-btn {
+            padding: 12px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007BFF;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            transition: background-color 0.3s ease;
+            align-self: center;
+            width: 50%;
+            font-weight: bold;
+        }
+        #telemetry-submit-btn:hover {
+            background-color: #0056b3;
+        }
+        #telemetry-message {
+            font-size: 14px;
+            text-align: center;
+            min-height: 20px;
+        }
+        #add-channel-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        #add-channel-buttons button {
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            background-color: #17a2b8;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            transition: background-color 0.3s ease;
+            font-weight: bold;
+        }
+        #add-channel-buttons button:hover {
+            background-color: #117a8b;
+        }
+        /* EQNS container */
+        .eqns-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .eqns-container label {
+            font-weight: normal;
+            font-size: 14px;
+        }
+        .eqns-container input[type="text"] {
+            width: 4em;
+        }
+
+        /* MQTT UI */
+        .mqtt-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .mqtt-row input[type="text"] {
+            width: calc(100% - 80px);
+        }
+        .mqtt-details {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 8px;
+            background-color: #eee;
+            border-radius: 6px;
+            margin-left: 20px;
+        }
+        .mqtt-details label {
+            font-weight: normal;
+        }
+        .retain-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        /* End MQTT UI */
+
+        /* Callsign, Comment, Status, Auto Location, Send */
+        #location-form {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 5px;
+            background-color: #f8f8f8;
+            padding: 10px;
+            border-bottom: 1px solid #ccc;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #location-form label {
+            display: block;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        #location-form input[type="text"] {
+            font-size: 14px;
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            width: 150px;
+            transition: border-color 0.3s ease;
+        }
+        #location-form input[type="text"]:focus {
+            border-color: #007BFF;
+            outline: none;
+        }
+        #location-form input[type="checkbox"] {
+            transform: scale(1.2);
+            margin-left: 5px;
+            margin-right: 5px;
+            cursor: pointer;
+        }
+        #location-form button {
+            font-size: 14px;
+            padding: 6px 12px;
+            cursor: pointer;
+            background-color: #28a745;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            transition: background-color 0.3s ease;
+            font-weight: bold;
+        }
+        #location-form button:hover {
+            background-color: #218838;
+        }
+        /* Styles for the Reset button */
+        #location-form #reset-btn {
+            background-color: red;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+        }
+        #location-form #reset-btn:hover {
+            background-color: #c70000;
+        }
+        /* Styles for the Clear button */
+        #location-form #clear-btn {
+            background-color: yellow;
+            color: black;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+        }
+        #location-form #clear-btn:hover {
+            background-color: #ffd700;
+        }
+
+        .symbol-container {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+        #symbol-preview-img {
+            height: 32px;
+            width: 32px;
+            vertical-align: middle;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #send-status {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 14px;
+            color: green;
+            margin-left: 10px;
+        }
+
+        /* New Statistics Section */
+        #statistics {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-around;
+            background-color: #f0f0f0;
+            padding: 0px;
+            border-top: 1px solid #ccc;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .stat-item {
+            margin: 5px 10px;
+            font-size: 14px;
+            color: #333;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="location-form">
+        <label>Callsign:
+            <input type="text" id="callsign-input" maxlength="10" placeholder="eg. MM3NDH-6">
+        </label>
+        <label>Comment:
+            <input type="text" id="comment-input" placeholder="Optional...">
+        </label>
+        <label>Status:
+            <input type="text" id="status-input" placeholder="Optional...">
+        </label>
+        <label class="symbol-container">Symbol:
+            <input type="text" id="symbol-input" value="/L" maxlength="2" style="width:2em;">
+            <img id="symbol-preview-img" alt="">
+        </label>
+
+        <label>
+            <input type="checkbox" id="auto-location-checkbox">
+            Auto Location
+        </label>
+        <button id="send-btn">TX</button>
+        <button id="clear-btn">Clear</button> <!-- Added Clear Button -->
+        <button id="reset-btn">Reset</button> <!-- Renamed Reset Button -->
+        <span id="send-status"></span>
+    </div>
+
+    <!-- New Statistics Section -->
+    <div id="statistics">
+        <div class="stat-item" id="stat-num-stations">Stations: 0</div>
+        <div class="stat-item" id="stat-last-marker">Added: N/A</div>
+        <div class="stat-item" id="stat-last-packet">Last Pkt: N/A</div>
+        <div class="stat-item" id="stat-avg-packet-time">Pkt Avg: N/A</div>
+    </div>
+    <!-- End of Statistics Section -->
+
+    <div id="map"></div>
+    <div id="ws-indicator" title="WebSocket Disconnected"></div>
+    <div id="control-panel">
+        <label>
+            <input type="checkbox" id="show-paths-checkbox" checked>
+            Show Paths
+        </label>
+        <label>
+            <input type="checkbox" id="auto-zoom-checkbox" checked>
+            Auto Zoom
+        </label>
+        <button id="telemetry-btn">Telemetry</button>
+        <a href="/static/settings.html" target=_new>Settings</a>
+    </div>
+
+    <!-- JSON log box -->
+    <div id="json-payload-box">
+        <span class="close-btn">&times;</span>
+        <div id="json-entries"></div>
+    </div>
+    <div id="json-reopen-marker" title="Show JSON Payload">
+        &#9664; JSON
+    </div>
+
+    <!-- Raw data modal -->
+    <div id="raw-data-modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <pre id="raw-data-content"></pre>
+        </div>
+    </div>
+
+    <!-- Telemetry Modal -->
+    <div id="telemetry-modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h2>Telemetry Channels</h2>
+            <div id="add-channel-buttons">
+                <button id="add-analogue-btn">Add Analogue Channel</button>
+                <button id="add-digital-btn">Add Digital Channel</button>
+            </div>
+            <form id="telemetry-form">
+                <div id="telemetry-channels-container"></div>
+                <button type="submit" id="telemetry-submit-btn">Update Telemetry</button>
+                <div id="telemetry-message"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- LeafletJS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <!-- Socket.IO Client -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.js"></script>
+    <script>
+        // Request Notification permission if supported and not already granted
+        if ('Notification' in window && Notification.permission !== 'granted') {
+            Notification.requestPermission();
+        }
+
+        // ----------------------------------------------------------------------------
+        // MAP + APRS logic
+        // ----------------------------------------------------------------------------
+        var map = L.map('map').setView([0, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        var socket = io();
+        var predefinedColors = [
+            '#1f78b4','#33a02c','#e31a1c','#ff7f00','#6a3d9a','#b15928','#a6cee3',
+            '#b2df8a','#fb9a99','#fdbf6f','#cab2d6','#ffff99','#b3e2cd','#ccebc5',
+            '#decbe4','#fed9a6','#ffffcc','#e5d8bd','#fddaec','#f2f2f2'
+        ];
+
+        function getColorForStation(station) {
+            var hash = 0;
+            for (var i = 0; i < station.length; i++) {
+                hash = station.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            var index = Math.abs(hash) % predefinedColors.length;
+            return predefinedColors[index];
+        }
+
+        var markers = {};
+        var allLatLngs = [];
+        var wsIndicator = document.getElementById('ws-indicator');
+        var showPathsCheckbox = document.getElementById('show-paths-checkbox');
+        var autoZoomCheckbox = document.getElementById('auto-zoom-checkbox');
+        var firstPacketReceived = false;
+
+        // JSON box
+        var jsonBoxClosedManually = false;
+        var jsonBox = document.getElementById('json-payload-box');
+        var jsonEntries = document.getElementById('json-entries');
+
+        // Initialize storedMarkers from localStorage
+        var storedMarkers = JSON.parse(localStorage.getItem('markers') || '{}');
+
+        // Function to load saved data on page load
+        function loadSavedData() {
+            // Populate input fields from localStorage
+            var callsign = localStorage.getItem('callsign');
+            if (callsign) document.getElementById('callsign-input').value = callsign;
+
+            var comment = localStorage.getItem('comment');
+            if (comment) document.getElementById('comment-input').value = comment;
+
+            var status = localStorage.getItem('status');
+            if (status) document.getElementById('status-input').value = status;
+
+            var symbol = localStorage.getItem('symbol');
+            if (symbol) {
+                document.getElementById('symbol-input').value = symbol;
+                var symbolUrl = 'https://lora-aprs.live/api/symbol?symbol=' + encodeURIComponent(symbol);
+                document.getElementById('symbol-preview-img').src = symbolUrl;
+                document.getElementById('symbol-preview-img').style.display = 'inline';
+            } else {
+                document.getElementById('symbol-preview-img').style.display = 'none';
+            }
+
+            // Populate JSON history from localStorage
+            var jsonHistory = JSON.parse(localStorage.getItem('jsonHistory') || '[]');
+            jsonHistory.slice(-250).forEach(function(entry) {
+                var entryDiv = document.createElement('div');
+                entryDiv.className = 'json-entry';
+
+                var localTimeStr = formatLocalTime(entry.timestamp);
+                var timestampEl = document.createElement('div');
+                timestampEl.className = 'timestamp';
+                timestampEl.textContent = `Received at: ${localTimeStr}`;
+
+                var preEl = document.createElement('pre');
+                preEl.textContent = JSON.stringify(entry.data, null, 2);
+
+                entryDiv.appendChild(timestampEl);
+                entryDiv.appendChild(preEl);
+
+                // Insert at top
+                if (jsonEntries.firstChild) {
+                    jsonEntries.insertBefore(entryDiv, jsonEntries.firstChild);
+                } else {
+                    jsonEntries.appendChild(entryDiv);
+                }
+            });
+            if (jsonHistory.length > 0 && !jsonBoxClosedManually) {
+                jsonBox.style.display = 'block';
+            }
+
+            // Populate markers from localStorage
+            var allLoadedLatLngs = []; // To store all marker positions
+            for (var station in storedMarkers) {
+                if (storedMarkers.hasOwnProperty(station)) {
+                    var data = storedMarkers[station];
+                    var customIcon = L.icon({
+                        iconUrl: `https://lora-aprs.live/api/symbol?symbol=${encodeURIComponent(data.symbol_table + data.symbol)}`,
+                        iconSize: [40, 40],
+                        iconAnchor: [20, 20],
+                        popupAnchor: [0, -20]
+                    });
+                    var marker = L.marker([data.latitude, data.longitude], {icon: customIcon}).addTo(map);
+                    marker.bindTooltip(station, {
+                        permanent: true,
+                        direction: "bottom",
+                        offset: [0, 10],
+                        className: "station-label"
+                    });
+                    markers[station] = {
+                        marker: marker,
+                        path: data.path ? data.path.map(pt => L.latLng(pt.lat, pt.lng)) : [],
+                        polyline: null,
+                        timestamp: data.timestamp,
+                        dots: [],
+                        to: data.to || "",
+                        pathInfo: data.pathInfo || [],
+                        comment: data.comment || "",
+                        status: data.status || "",
+                        rawPackets: [] // Raw packets cannot be restored
+                    };
+                    allLoadedLatLngs.push([data.latitude, data.longitude]); // Collect main marker position
+
+                    if (showPathsCheckbox.checked && markers[station].path.length > 0) {
+                        var polyline = L.polyline(markers[station].path, {
+                            color: getColorForStation(station),
+                            weight: 5
+                        }).addTo(map);
+                        markers[station].polyline = polyline;
+                        // Recreate dots and add their positions
+                        markers[station].dots = markers[station].path.map(pt => L.circleMarker(pt, {
+                            radius: 5,
+                            color: getColorForStation(station),
+                            fillColor: getColorForStation(station),
+                            fillOpacity: 1,
+                            weight: 0
+                        }).addTo(map));
+                        
+                        // Add each path point to allLoadedLatLngs
+                        markers[station].path.forEach(pt => {
+                            allLoadedLatLngs.push([pt.lat, pt.lng]);
+                        });
+                    }
+                    rebuildPopup(station);
+                }
+            }
+
+            // After loading all markers, perform fitBounds if applicable
+            if (allLoadedLatLngs.length > 0 && autoZoomCheckbox.checked) {
+                if (allLoadedLatLngs.length === 1) {
+                    map.setView(allLoadedLatLngs[0], 13); // Set to a reasonable zoom level
+                } else {
+                    var bounds = L.latLngBounds(allLoadedLatLngs);
+                    map.fitBounds(bounds, { padding: [50, 50] }); // Add padding as needed
+                }
+            }
+        }
+
+        // Call loadSavedData after the script is loaded
+        loadSavedData();
+
+        socket.on('connect', function() {
+            wsIndicator.style.backgroundColor = 'green';
+            wsIndicator.title = 'WebSocket Connected';
+        });
+
+        socket.on('disconnect', function() {
+            wsIndicator.style.backgroundColor = 'red';
+            wsIndicator.title = 'WebSocket Disconnected';
+        });
+
+        socket.on('aprs_packet', function(data) {
+            var station = String(data.from || "").trim().toUpperCase();
+
+            // Parse packet timestamp
+            var packetDate = new Date(data.timestamp);
+            if (!isNaN(packetDate)) {
+                packetTimestamps.push(packetDate.getTime());
+                lastPacketTimestamp = packetDate;
+                // Keep only the last 100 timestamps to prevent memory issues
+                if (packetTimestamps.length > 100) {
+                    packetTimestamps.shift();
+                }
+            }
+
+            // Check if it's a new station
+            var isNewStation = !markers[station] || !markers[station].marker;
+            if (isNewStation) {
+                lastAddedMarker = {
+                    callsign: station,
+                    timestamp: packetDate
+                };
+            }
+
+            // Existing APRS packet handling logic...
+
+            // Ensure we have a markers entry for this station
+            if (!markers[station]) {
+                markers[station] = {
+                    marker: null,
+                    path: [],
+                    polyline: null,
+                    timestamp: null,
+                    dots: [],
+                    to: "",
+                    pathInfo: [],
+                    comment: "",
+                    status: "",
+                    rawPackets: [] // store all raw packets here
+                };
+            }
+            // Make sure rawPackets array exists, then push this new data
+            if (!markers[station].rawPackets) {
+                markers[station].rawPackets = [];
+            }
+            markers[station].rawPackets.push(data);
+
+            if (!firstPacketReceived) {
+                firstPacketReceived = true;
+                if (autoZoomCheckbox.checked) {
+                    updateBounds();
+                    map.once('moveend', function() {
+                        if (!autoLocationCheckbox.checked) {
+                            userMarker.setLatLng(map.getCenter());
+                        }
+                    });
+                } else {
+                    if (!autoLocationCheckbox.checked) {
+                        userMarker.setLatLng(map.getCenter());
+                    }
+                }
+            }
+
+            if (!data.timestamp) {
+                console.warn("No 'timestamp':", data);
+                return;
+            }
+
+            logJsonPayload(data, data.timestamp);
+
+            // Update or create the marker if we have lat/long and symbol data
+            if (data.latitude && data.longitude && data.symbol && data.symbol_table) {
+                updateOrCreateMarker(data);
+            } 
+            // Or if it's a status update with no lat/long
+            else if (station && data.status) {
+                if (markers[station]) {
+                    markers[station].timestamp = data.timestamp;
+                    markers[station].status = data.status;
+                    rebuildPopup(station);
+                }
+            }
+        });
+
+        // ----------------------------------------------------------------------------
+        // Statistics Logic
+        // ----------------------------------------------------------------------------
+
+        // Variables to track statistics
+        var packetTimestamps = []; // Stores timestamps of received packets
+        var lastPacketTimestamp = null; // Timestamp of the last received packet
+        var lastAddedMarker = null; // { callsign: String, timestamp: Date }
+
+        // Statistics DOM elements
+        var statNumStations = document.getElementById('stat-num-stations');
+        var statLastMarker = document.getElementById('stat-last-marker');
+        var statLastPacket = document.getElementById('stat-last-packet');
+        var statAvgPacketTime = document.getElementById('stat-avg-packet-time');
+
+        // Function to format time difference as "Xh Ym Zs ago"
+        function formatTimeAgo(timestamp) {
+            var now = new Date();
+            var then = new Date(timestamp);
+            var diffMs = now - then;
+            if (isNaN(diffMs) || diffMs < 0) return "Unknown";
+            var diffSeconds = Math.floor(diffMs / 1000);
+            var hours = Math.floor(diffSeconds / 3600);
+            var minutes = Math.floor((diffSeconds % 3600) / 60);
+            var seconds = diffSeconds % 60;
+            var parts = [];
+            if (hours > 0) parts.push(hours + "h");
+            if (minutes > 0) parts.push(minutes + "m");
+            parts.push(seconds + "s");
+            return parts.join(" ");
+        }
+
+        // Function to calculate average time between packets
+        function calculateAveragePacketTime() {
+            if (packetTimestamps.length < 2) return "N/A";
+            var totalDiff = 0;
+            for (var i = 1; i < packetTimestamps.length; i++) {
+                var diff = packetTimestamps[i] - packetTimestamps[i - 1];
+                totalDiff += diff;
+            }
+            var avgMs = totalDiff / (packetTimestamps.length - 1);
+            var avgSeconds = Math.floor(avgMs / 1000);
+            var hours = Math.floor(avgSeconds / 3600);
+            var minutes = Math.floor((avgSeconds % 3600) / 60);
+            var seconds = avgSeconds % 60;
+            var parts = [];
+            if (hours > 0) parts.push(hours + "h");
+            if (minutes > 0) parts.push(minutes + "m");
+            parts.push(seconds + "s");
+            return parts.join(" ");
+        }
+
+        // Function to update statistics in the DOM
+        function updateStatistics() {
+            // 1. Number of Stations
+            var numStations = Object.keys(markers).length;
+            statNumStations.textContent = "Stations: " + numStations;
+
+            // 2. Last Added Marker
+            if (lastAddedMarker) {
+                var timeAgo = formatTimeAgo(lastAddedMarker.timestamp);
+                statLastMarker.textContent = "Added: " + lastAddedMarker.callsign + " (" + timeAgo + " ago)";
+            } else {
+                statLastMarker.textContent = "Added: N/A";
+            }
+
+            // 3. Time Since Last Packet Received
+            if (lastPacketTimestamp) {
+                var timeSinceLast = formatTimeAgo(lastPacketTimestamp);
+                statLastPacket.textContent = "Last Pkt: " + timeSinceLast + " ago";
+            } else {
+                statLastPacket.textContent = "Last Pkt: N/A";
+            }
+
+            // 4. Average Time Between Packets Received
+            var avgTime = calculateAveragePacketTime();
+            statAvgPacketTime.textContent = "Pkt Avg: " + avgTime;
+        }
+
+        // Initialize statistics
+        updateStatistics();
+
+        // Update statistics periodically (every second)
+        setInterval(updateStatistics, 1000);
+
+        function updateOrCreateMarker(data) {
+            var station = data.from.trim().toUpperCase();
+            var lat = parseFloat(data.latitude);
+            var lng = parseFloat(data.longitude);
+            var symbolTable = data.symbol_table;
+            var symbol = data.symbol;
+            var iconUrl = `https://lora-aprs.live/api/symbol?symbol=${encodeURIComponent(symbolTable + symbol)}`;
+            var customIcon = L.icon({
+                iconUrl: iconUrl,
+                iconSize: [40, 40],
+                iconAnchor: [20, 20],
+                popupAnchor: [0, -20]
+            });
+            var stationColor = getColorForStation(station);
+            var currentLatLng = L.latLng(lat, lng);
+
+            if (markers[station].marker) {
+                // Existing station => update
+                markers[station].marker.setLatLng(currentLatLng);
+                markers[station].marker.setIcon(customIcon);
+                markers[station].path.push(currentLatLng);
+
+                if (showPathsCheckbox.checked) {
+                    markers[station].polyline.setLatLngs(markers[station].path);
+                    markers[station].polyline.setStyle({ color: stationColor, weight: 5 });
+                    markers[station].polyline.addTo(map);
+
+                    var dot = L.circleMarker(currentLatLng, {
+                        radius: 5,
+                        color: stationColor,
+                        fillColor: stationColor,
+                        fillOpacity: 1,
+                        weight: 0
+                    }).addTo(map);
+                    markers[station].dots.push(dot);
+                } else {
+                    if (markers[station].polyline) {
+                        markers[station].polyline.remove();
+                        markers[station].polyline = null;
+                    }
+                    markers[station].dots.forEach(d => map.removeLayer(d));
+                    markers[station].dots = [];
+                }
+
+                markers[station].timestamp = data.timestamp;
+                if (data.status) markers[station].status = data.status;
+                if (data.to) markers[station].to = data.to;
+                if (Array.isArray(data.path)) markers[station].pathInfo = data.path;
+                if (data.comment !== undefined) markers[station].comment = data.comment;
+                rebuildPopup(station);
+            } else {
+                // New station => create new marker
+                var marker = L.marker(currentLatLng, {icon: customIcon}).addTo(map);
+                marker.bindTooltip(station, {
+                    permanent: true,
+                    direction: "bottom",
+                    offset: [0, 10],
+                    className: "station-label"
+                });
+
+                var pathPoints = [currentLatLng];
+                var polyline = L.polyline(pathPoints, {
+                    color: stationColor,
+                    weight: 5
+                });
+                if (showPathsCheckbox.checked) {
+                    polyline.addTo(map);
+                }
+
+                var dots = [];
+                if (showPathsCheckbox.checked) {
+                    var initialDot = L.circleMarker(currentLatLng, {
+                        radius: 5,
+                        color: stationColor,
+                        fillColor: stationColor,
+                        fillOpacity: 1,
+                        weight: 0
+                    }).addTo(map);
+                    dots.push(initialDot);
+                }
+
+                // Save to markers
+                markers[station].marker = marker;
+                markers[station].path = pathPoints;
+                markers[station].polyline = polyline;
+                markers[station].timestamp = data.timestamp;
+                markers[station].dots = dots;
+                markers[station].to = data.to || "";
+                markers[station].pathInfo = Array.isArray(data.path) ? data.path : [];
+                markers[station].comment = data.comment || "";
+                markers[station].status = data.status || "";
+
+                rebuildPopup(station);
+
+                // -------------------------
+                // Send the browser notification here for NEW station
+                // -------------------------
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification(`Station Spotted: ${station}`);
+                }
+            }
+
+            // Update storedMarkers and save to localStorage
+            storedMarkers[station] = {
+                from: station,
+                latitude: lat,
+                longitude: lng,
+                symbol_table: symbolTable,
+                symbol: symbol,
+                path: markers[station].path.map(pt => ({ lat: pt.lat, lng: pt.lng })),
+                to: markers[station].to,
+                pathInfo: markers[station].pathInfo,
+                comment: markers[station].comment,
+                status: markers[station].status
+            };
+            localStorage.setItem('markers', JSON.stringify(storedMarkers));
+
+            if (autoZoomCheckbox.checked) {
+                updateBounds();
+            }
+        }
+
+        function rebuildPopup(station) {
+            var m = markers[station];
+            if (!m) return;
+            var localTimeStr = formatLocalTime(m.timestamp);
+            var popupContent = `<div><strong>Time:</strong> ${escapeHtml(localTimeStr)}</div>`;
+            popupContent += `<div><strong>From:</strong> ${escapeHtml(station)}</div>`;
+            if (m.to) popupContent += `<div><strong>To:</strong> ${escapeHtml(m.to)}</div>`;
+            if (m.pathInfo && m.pathInfo.length) {
+                popupContent += `<div><strong>Path:</strong> ${m.pathInfo.map(escapeHtml).join(' → ')}</div>`;
+            }
+            if (m.comment) popupContent += `<div><strong>Comment:</strong> ${escapeHtml(m.comment)}</div>`;
+            if (m.status) popupContent += `<div><strong>Status:</strong> ${escapeHtml(m.status)}</div>`;
+
+            // Link to view raw data and messages for this station
+            popupContent += `
+                <div>
+                    <a href="#" class="view-raw-link" onclick="viewRawData('${escapeHtml(station)}')">
+                        View Packets
+                    </a>
+                    | 
+                    <a href="/static/messages.html?conversation=${encodeURIComponent(station)}" class="send-message" target="rightFrame">
+                        Send Message
+                    </a>
+                </div>
+            `;
+
+            m.marker.bindPopup(popupContent);
+        }
+
+        function logJsonPayload(data, timestamp) {
+            var entryDiv = document.createElement('div');
+            entryDiv.className = 'json-entry';
+
+            var localTimeStr = formatLocalTime(timestamp);
+            var timestampEl = document.createElement('div');
+            timestampEl.className = 'timestamp';
+            timestampEl.textContent = `Received at: ${localTimeStr}`;
+
+            var preEl = document.createElement('pre');
+            preEl.textContent = JSON.stringify(data, null, 2);
+
+            entryDiv.appendChild(timestampEl);
+            entryDiv.appendChild(preEl);
+
+            // Insert at top
+            if (jsonEntries.firstChild) {
+                jsonEntries.insertBefore(entryDiv, jsonEntries.firstChild);
+            } else {
+                jsonEntries.appendChild(entryDiv);
+            }
+
+            // auto-open if not closed by user
+            if (!jsonBoxClosedManually && jsonBox.style.display !== 'block') {
+                jsonBox.style.display = 'block';
+            }
+
+            // Manage JSON history with max 250 entries
+            var jsonHistory = JSON.parse(localStorage.getItem('jsonHistory') || '[]');
+            jsonHistory.push({ data: data, timestamp: timestamp });
+            if (jsonHistory.length > 250) {
+                jsonHistory.shift();
+            }
+            localStorage.setItem('jsonHistory', JSON.stringify(jsonHistory));
+
+            // limit to 250 entries in the display
+            while (jsonEntries.children.length > 250) {
+                jsonEntries.removeChild(jsonEntries.lastChild);
+            }
+        }
+
+        function formatLocalTime(ts) {
+            var d = new Date(ts);
+            if (isNaN(d)) return "Unknown Timestamp";
+            var options = {
+                year: 'numeric', month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false
+            };
+            return d.toLocaleString(undefined, options);
+        }
+
+        function escapeHtml(str) {
+            if (!str) return "";
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // -----------
+        // Show ALL raw packets for a station in a modal
+        // -----------
+        function viewRawData(stationName) {
+            var modal = document.getElementById('raw-data-modal');
+            var rawContent = document.getElementById('raw-data-content');
+        
+            if (!markers[stationName] || !markers[stationName].rawPackets) {
+                rawContent.textContent = 'No raw data found for ' + stationName;
+            } else {
+                // Make a reversed copy of the rawPackets array
+                var packetsArray = markers[stationName].rawPackets.slice().reverse();
+                rawContent.textContent = JSON.stringify(packetsArray, null, 2);
+            }
+            modal.style.display = 'flex';
+        }
+        function hideRawData() {
+            document.getElementById('raw-data-modal').style.display = 'none';
+        }
+        document.querySelector('#raw-data-modal .close-modal').addEventListener('click', hideRawData);
+        window.addEventListener('click', function(e) {
+            if (e.target.id === 'raw-data-modal') hideRawData();
+        });
+
+        // ----------------------------------------------------------------------------
+        // JSON box show/hide
+        // ----------------------------------------------------------------------------
+        document.querySelector('#json-payload-box .close-btn').addEventListener('click', function() {
+            jsonBox.style.display = 'none';
+            document.getElementById('json-reopen-marker').style.display = 'block';
+            jsonBoxClosedManually = true;
+        });
+        document.getElementById('json-reopen-marker').addEventListener('click', function() {
+            jsonBox.style.display = 'block';
+            this.style.display = 'none';
+            jsonBoxClosedManually = false;
+        });
+
+        // ----------------------------------------------------------------------------
+        // Show/Hide Paths + AutoZoom logic
+        // ----------------------------------------------------------------------------
+        showPathsCheckbox.addEventListener('change', function() {
+            var showPaths = showPathsCheckbox.checked;
+            for (var st in markers) {
+                if (markers.hasOwnProperty(st)) {
+                    var m = markers[st];
+                    if (showPaths) {
+                        if (m.polyline) m.polyline.addTo(map);
+                        m.dots.forEach(d => d.addTo(map));
+                    } else {
+                        if (m.polyline) m.polyline.remove();
+                        m.dots.forEach(d => map.removeLayer(d));
+                        m.dots = [];
+                    }
+                }
+            }
+        });
+        autoZoomCheckbox.addEventListener('change', function() {
+            if (autoZoomCheckbox.checked) {
+                updateBounds();
+            }
+        });
+        function updateBounds() {
+            allLatLngs = [];
+            for (var st in markers) {
+                if (markers.hasOwnProperty(st)) {
+                    if (markers[st].marker) {
+                        allLatLngs.push(markers[st].marker.getLatLng());
+                    }
+                }
+            }
+            if (allLatLngs.length > 0) {
+                map.fitBounds(L.latLngBounds(allLatLngs), { padding: [50, 50] });
+            }
+        }
+
+        // -----------------------------------------------------------------------------------
+        //  Draggable user marker + auto-location + send location
+        // -----------------------------------------------------------------------------------
+        var userMarker = L.marker([0, 0], {draggable: true}).addTo(map);
+        userMarker.on('dragend', function() {
+            map.setView(userMarker.getLatLng());
+        });
+
+        var autoLocationCheckbox = document.getElementById('auto-location-checkbox');
+        var autoLocationInterval = null;
+        var lastBrowserLat = null;
+        var lastBrowserLng = null;
+
+        function startAutoLocation() {
+            updateLocationFromBrowser();
+            autoLocationInterval = setInterval(updateLocationFromBrowser, 30000);
+        }
+        function stopAutoLocation() {
+            if (autoLocationInterval) clearInterval(autoLocationInterval);
+            autoLocationInterval = null;
+            lastBrowserLat = null;
+            lastBrowserLng = null;
+        }
+        function updateLocationFromBrowser() {
+            if (!navigator.geolocation) {
+                console.warn("No browser geolocation.");
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(function(pos) {
+                var lat = pos.coords.latitude;
+                var lng = pos.coords.longitude;
+                userMarker.setLatLng([lat, lng]);
+                map.setView([lat, lng], 13);
+
+                // If location changed, auto-send a new location
+                if (lastBrowserLat !== null && lastBrowserLng !== null) {
+                    if (lat !== lastBrowserLat || lng !== lastBrowserLng) {
+                        var c = document.getElementById('callsign-input').value.trim();
+                        if (c) {
+                            sendLocationAndOptionallyBeacon();
+                        }
+                    }
+                }
+                lastBrowserLat = lat;
+                lastBrowserLng = lng;
+            }, function(err) {
+                console.warn("Geolocation error:", err);
+            }, { enableHighAccuracy: true });
+        }
+
+        autoLocationCheckbox.addEventListener('change', function() {
+            if (this.checked) {
+                startAutoLocation();
+            } else {
+                stopAutoLocation();
+            }
+        });
+
+        function sendLocationAndOptionallyBeacon() {
+            var callsignVal = document.getElementById('callsign-input').value.trim();
+            if (!callsignVal) return;
+
+            var latlng = userMarker.getLatLng();
+            var commentVal = document.getElementById('comment-input').value.trim();
+            var statusVal = document.getElementById('status-input').value.trim();
+            var symbolVal = document.getElementById('symbol-input').value;
+
+            var payload = {
+                from: callsignVal,
+                latitude: latlng.lat,
+                longitude: latlng.lng
+            };
+            if (commentVal) payload.comment = commentVal;
+            if (symbolVal && symbolVal.length === 2) {
+                payload.symbol_table = symbolVal[0];
+                payload.symbol = symbolVal[1];
+            }
+
+            fetch('/api/send/location', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(function(r) {
+                if (!r.ok) throw new Error("Location send error: " + r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                showSentMessage();
+                if (statusVal) {
+                    var stPayload = { from: callsignVal, status: statusVal };
+                    fetch('/api/send/beacon', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(stPayload)
+                    })
+                    .then(function(res) {
+                        if (!res.ok) throw new Error("Beacon error: " + res.status);
+                        return res.json();
+                    })
+                    .then(function(beaconData) {
+                        console.log("Beacon status posted:", beaconData);
+                    })
+                    .catch(function(err) {
+                        console.error("Beacon error:", err);
+                    });
+                }
+                // Update symbol preview
+                if (symbolVal && symbolVal.length === 2) {
+                    var symbolUrl = 'https://lora-aprs.live/api/symbol?symbol=' + encodeURIComponent(symbolVal);
+                    var previewImg = document.getElementById('symbol-preview-img');
+                    previewImg.src = symbolUrl;
+                    previewImg.style.display = 'inline';
+                } else {
+                    document.getElementById('symbol-preview-img').style.display = 'none';
+                }
+
+                // Store input values to localStorage
+                localStorage.setItem('callsign', callsignVal);
+                localStorage.setItem('comment', commentVal);
+                localStorage.setItem('status', statusVal);
+                localStorage.setItem('symbol', symbolVal);
+            })
+            .catch(function(err) {
+                console.error("Error sending location:", err);
+            });
+        }
+
+        var sendBtn = document.getElementById('send-btn');
+        sendBtn.addEventListener('click', function() {
+            sendLocationAndOptionallyBeacon();
+        });
+        function showSentMessage() {
+            var el = document.getElementById('send-status');
+            el.textContent = "OK";
+            setTimeout(() => { el.textContent = ""; }, 1000);
+        }
+
+        // -----------------------------------------------------------------------------------
+        // TELEMETRY MODAL (including MQTT UI)
+        // -----------------------------------------------------------------------------------
+        var telemetryBtn = document.getElementById('telemetry-btn');
+        var telemetryModal = document.getElementById('telemetry-modal');
+        var telemetryCloseBtn = telemetryModal.querySelector('.close-modal');
+        var telemetryForm = document.getElementById('telemetry-form');
+        var telemetryChannelsContainer = document.getElementById('telemetry-channels-container');
+        var telemetryMessage = document.getElementById('telemetry-message');
+        var addAnalogueBtn = document.getElementById('add-analogue-btn');
+        var addDigitalBtn = document.getElementById('add-digital-btn');
+
+        const MAX_ANALOGUE_CHANNELS = 5;
+        const MAX_DIGITAL_CHANNELS = 8;
+        var changedChannels = new Set();
+
+        telemetryBtn.addEventListener('click', function() {
+            openTelemetryModal();
+        });
+        telemetryCloseBtn.addEventListener('click', function() {
+            telemetryModal.style.display = 'none';
+            clearTelemetryForm();
+        });
+        window.addEventListener('click', function(event) {
+            if (event.target === telemetryModal) {
+                telemetryModal.style.display = 'none';
+                clearTelemetryForm();
+            }
+        });
+
+        function openTelemetryModal() {
+            var callsign = document.getElementById('callsign-input').value.trim();
+            if (!callsign) {
+                alert("Please enter your callsign before opening telemetry.");
+                return;
+            }
+            telemetryChannelsContainer.innerHTML = '';
+            telemetryMessage.textContent = '';
+            changedChannels.clear();
+
+            fetch(`/api/receive/telemetry?from=${encodeURIComponent(callsign)}`)
+                .then(function(resp) {
+                    if (resp.status === 404) {
+                        telemetryModal.style.display = 'flex';
+                        return null;
+                    }
+                    if (!resp.ok) {
+                        throw new Error("Error fetching telemetry: " + resp.statusText);
+                    }
+                    return resp.json();
+                })
+                .then(function(data) {
+                    if (data) {
+                        populateTelemetryForm(data);
+                    }
+                    telemetryModal.style.display = 'flex';
+                })
+                .catch(function(error) {
+                    console.error(error);
+                    alert("Failed to load telemetry data. Check callsign or if telemetry exists.");
+                });
+        }
+
+        function populateTelemetryForm(data) {
+            if (!data.channels || data.channels.length === 0) {
+                telemetryChannelsContainer.innerHTML = '<p>No telemetry channels found.</p>';
+                return;
+            }
+            data.channels.forEach(function(ch) {
+                addTelemetryChannelToForm(ch, false);
+            });
+        }
+
+        function addTelemetryChannelToForm(channel, isNew) {
+            var channelDiv = document.createElement('div');
+            channelDiv.className = 'telemetry-channel';
+            channelDiv.dataset.channelNumber = channel.channel;
+
+            var channelLabel = document.createElement('label');
+            channelLabel.textContent = `Channel ${channel.channel} (${capitalizeFirstLetter(channel.type)})`;
+            channelDiv.appendChild(channelLabel);
+
+            // Parameter
+            var parameterLabel = document.createElement('label');
+            parameterLabel.textContent = 'Parameter: ';
+            var parameterInput = document.createElement('input');
+            parameterInput.type = 'text';
+            parameterInput.name = `parameter_${channel.channel}`;
+            parameterInput.value = channel.parameter || '';
+            parameterInput.required = true;
+            parameterLabel.appendChild(parameterInput);
+            channelDiv.appendChild(parameterLabel);
+
+            // Unit
+            var unitLabel = document.createElement('label');
+            unitLabel.textContent = 'Unit: ';
+            var unitInput = document.createElement('input');
+            unitInput.type = 'text';
+            unitInput.name = `unit_${channel.channel}`;
+            unitInput.value = channel.unit || '';
+            unitInput.required = true;
+            unitLabel.appendChild(unitInput);
+            channelDiv.appendChild(unitLabel);
+
+            // Value
+            var valueLabel = document.createElement('label');
+            valueLabel.textContent = 'Value: ';
+            var valueInput = document.createElement('input');
+            if (channel.type === 'analogue') {
+                valueInput.type = 'number';
+                valueInput.step = 'any';
+                valueInput.name = `value_${channel.channel}`;
+                valueInput.value = channel.value !== undefined ? channel.value : '';
+                valueInput.required = true;
+            } else {
+                valueInput.type = 'checkbox';
+                valueInput.name = `value_${channel.channel}`;
+                valueInput.checked = isChecked(channel.value);
+            }
+            valueLabel.appendChild(valueInput);
+            channelDiv.appendChild(valueLabel);
+
+            // Delete button
+            var deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-channel-btn';
+            deleteBtn.innerHTML = '&times;';
+            deleteBtn.title = 'Delete Channel';
+            channelDiv.appendChild(deleteBtn);
+
+            // If analogue => EQNS
+            if (channel.type === 'analogue') {
+                var eqnsContainer = document.createElement('div');
+                eqnsContainer.className = 'eqns-container';
+
+                var eqnsLabel = document.createElement('label');
+                eqnsLabel.textContent = 'EQNS: ';
+
+                var eqnsA = document.createElement('input');
+                eqnsA.type = 'text';
+                eqnsA.name = `eqns_a_${channel.channel}`;
+                eqnsA.maxLength = 4;
+                eqnsA.placeholder = 'a';
+
+                var eqnsB = document.createElement('input');
+                eqnsB.type = 'text';
+                eqnsB.name = `eqns_b_${channel.channel}`;
+                eqnsB.maxLength = 4;
+                eqnsB.placeholder = 'b';
+
+                var eqnsC = document.createElement('input');
+                eqnsC.type = 'text';
+                eqnsC.name = `eqns_c_${channel.channel}`;
+                eqnsC.maxLength = 4;
+                eqnsC.placeholder = 'c';
+
+                eqnsContainer.appendChild(eqnsLabel);
+                eqnsContainer.appendChild(eqnsA);
+                eqnsContainer.appendChild(eqnsB);
+                eqnsContainer.appendChild(eqnsC);
+
+                if (channel.eqns) {
+                    var parts = channel.eqns.split(',');
+                    if (parts.length === 3) {
+                        eqnsA.value = parts[0];
+                        eqnsB.value = parts[1];
+                        eqnsC.value = parts[2];
+                    }
+                }
+                channelDiv.appendChild(eqnsContainer);
+
+                [eqnsA, eqnsB, eqnsC].forEach(inp => {
+                    inp.addEventListener('input', function() {
+                        var parentDiv = this.closest('.telemetry-channel');
+                        var chanNum = parseInt(parentDiv.dataset.channelNumber);
+                        changedChannels.add(chanNum);
+                    });
+                });
+            }
+
+            // MQTT UI
+            var mqttEnabled = (channel.mqtt === true);
+            var mqttRetained = (channel.mqtt_retained === true);
+
+            var mqttRow = document.createElement('div');
+            mqttRow.className = 'mqtt-row';
+
+            var mqttCheckbox = document.createElement('input');
+            mqttCheckbox.type = 'checkbox';
+            mqttCheckbox.name = `mqtt_${channel.channel}`;
+            mqttCheckbox.checked = mqttEnabled;
+
+            var mqttLabel = document.createElement('label');
+            mqttLabel.textContent = 'MQTT Enabled';
+
+            mqttRow.appendChild(mqttCheckbox);
+            mqttRow.appendChild(mqttLabel);
+            channelDiv.appendChild(mqttRow);
+
+            var mqttDetailsDiv = document.createElement('div');
+            mqttDetailsDiv.className = 'mqtt-details';
+
+            var stateTopicLabel = document.createElement('label');
+            stateTopicLabel.textContent = 'State Topic:';
+            var stateTopicInput = document.createElement('input');
+            stateTopicInput.type = 'text';
+            stateTopicInput.name = `topic_state_${channel.channel}`;
+            stateTopicInput.value = channel.topic_state || '';
+
+            stateTopicLabel.appendChild(stateTopicInput);
+            mqttDetailsDiv.appendChild(stateTopicLabel);
+
+            var cmdTopicLabel = document.createElement('label');
+            cmdTopicLabel.textContent = 'Command Topic:';
+            var cmdTopicInput = document.createElement('input');
+            cmdTopicInput.type = 'text';
+            cmdTopicInput.name = `topic_cmd_${channel.channel}`;
+            cmdTopicInput.value = channel.topic_cmd || '';
+
+            cmdTopicLabel.appendChild(cmdTopicInput);
+            mqttDetailsDiv.appendChild(cmdTopicLabel);
+
+            // Retain row
+            var retainRow = document.createElement('div');
+            retainRow.className = 'retain-row';
+            var retainCheckbox = document.createElement('input');
+            retainCheckbox.type = 'checkbox';
+            retainCheckbox.name = `mqtt_retained_${channel.channel}`;
+            retainCheckbox.checked = mqttRetained;
+            var retainLabel = document.createElement('label');
+            retainLabel.textContent = 'Retain?';
+
+            retainRow.appendChild(retainCheckbox);
+            retainRow.appendChild(retainLabel);
+            mqttDetailsDiv.appendChild(retainRow);
+
+            if (!mqttEnabled) {
+                mqttDetailsDiv.style.display = 'none';
+            }
+            mqttRow.appendChild(mqttDetailsDiv);
+
+            mqttCheckbox.addEventListener('change', function() {
+                if (this.checked) {
+                    mqttDetailsDiv.style.display = 'flex';
+                    mqttDetailsDiv.style.flexDirection = 'column';
+                } else {
+                    mqttDetailsDiv.style.display = 'none';
+                }
+                var parentDiv = this.closest('.telemetry-channel');
+                var chanNum = parseInt(parentDiv.dataset.channelNumber);
+                changedChannels.add(chanNum);
+            });
+
+            [mqttCheckbox, stateTopicInput, cmdTopicInput, retainCheckbox].forEach(function(elem) {
+                elem.addEventListener('input', function() {
+                    var parentDiv = this.closest('.telemetry-channel');
+                    var chanNum = parseInt(parentDiv.dataset.channelNumber);
+                    changedChannels.add(chanNum);
+                });
+            });
+
+            telemetryChannelsContainer.appendChild(channelDiv);
+
+            [parameterInput, unitInput, valueInput].forEach(function(inpt) {
+                inpt.addEventListener('change', function() {
+                    var parentDiv = this.closest('.telemetry-channel');
+                    var chanNum = parseInt(parentDiv.dataset.channelNumber);
+                    changedChannels.add(chanNum);
+                });
+            });
+
+            deleteBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                var parentDiv = this.closest('.telemetry-channel');
+                var channelNumber = parseInt(parentDiv.dataset.channelNumber);
+                var c = document.getElementById('callsign-input').value.trim();
+
+                if (!c) {
+                    alert("Callsign is missing. Cannot delete telemetry channel.");
+                    return;
+                }
+                if (!confirm(`Are you sure you want to delete Channel ${channelNumber}?`)) {
+                    return;
+                }
+
+                fetch('/api/send/telemetry', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ from: c, channel: channelNumber })
+                })
+                .then(function(r) {
+                    if (!r.ok) {
+                        return r.json().then(function(dat) {
+                            throw new Error(dat.error || 'Unknown error');
+                        });
+                    }
+                    return r.json();
+                })
+                .then(function(dat) {
+                    console.log(`Deleted channel ${channelNumber}`, dat);
+                    parentDiv.remove();
+                    changedChannels.delete(channelNumber);
+                    telemetryMessage.style.color = 'green';
+                    telemetryMessage.textContent = `Channel ${channelNumber} deleted successfully!`;
+                    setTimeout(() => {
+                        telemetryMessage.textContent = '';
+                    }, 3000);
+                })
+                .catch(function(err) {
+                    console.error(`Error deleting channel ${channelNumber}:`, err);
+                    telemetryMessage.style.color = 'red';
+                    telemetryMessage.textContent = `Error: ${err.message}`;
+                });
+            });
+        }
+
+        telemetryForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            var callsign = document.getElementById('callsign-input').value.trim();
+            if (!callsign) {
+                alert("Callsign is missing.");
+                return;
+            }
+            if (changedChannels.size === 0) {
+                telemetryMessage.style.color = 'orange';
+                telemetryMessage.textContent = 'No valid changes to submit.';
+                setTimeout(function() {
+                    telemetryMessage.textContent = '';
+                }, 3000);
+                return;
+            }
+
+            var channelsArray = [];
+            changedChannels.forEach(function(chanNum) {
+                var chDiv = telemetryChannelsContainer.querySelector(`.telemetry-channel[data-channel-number="${chanNum}"]`);
+                if (!chDiv) return;
+
+                var paramInp = chDiv.querySelector(`input[name="parameter_${chanNum}"]`);
+                var unitInp  = chDiv.querySelector(`input[name="unit_${chanNum}"]`);
+                var valInp   = chDiv.querySelector(`input[name="value_${chanNum}"]`);
+
+                var channelLabel = chDiv.querySelector('label').textContent;
+                var typeMatch = channelLabel.match(/\((\w+)\)/);
+                var chType = typeMatch ? typeMatch[1].toLowerCase() : 'digital';
+
+                var paramVal = (paramInp.value || '').trim();
+                var unitVal  = (unitInp.value || '').trim();
+                if (!paramVal || !unitVal) {
+                    console.warn(`Channel ${chanNum} missing param or unit`);
+                    return;
+                }
+
+                var finalVal;
+                if (chType === 'digital') {
+                    finalVal = valInp.checked ? 1 : 0;
+                } else {
+                    var parsedVal = parseFloat(valInp.value);
+                    if (isNaN(parsedVal)) return;
+                    finalVal = parsedVal;
+                }
+
+                var chData = {
+                    channel: chanNum,
+                    parameter: paramVal,
+                    unit: unitVal,
+                    value: finalVal
+                };
+
+                // If analogue, gather EQNS
+                if (chType === 'analogue') {
+                    var eqnsA = chDiv.querySelector(`input[name="eqns_a_${chanNum}"]`).value.trim();
+                    var eqnsB = chDiv.querySelector(`input[name="eqns_b_${chanNum}"]`).value.trim();
+                    var eqnsC = chDiv.querySelector(`input[name="eqns_c_${chanNum}"]`).value.trim();
+                    if (eqnsA || eqnsB || eqnsC) {
+                        if (!eqnsA || !eqnsB || !eqnsC) {
+                            alert(`Channel ${chanNum}: fill all EQNS fields if any is used.`);
+                            return;
+                        }
+                        if (isNaN(parseFloat(eqnsA)) || isNaN(parseFloat(eqnsB)) || isNaN(parseFloat(eqnsC))) {
+                            alert(`Channel ${chanNum}: EQNS must be numeric.`);
+                            return;
+                        }
+                        chData.eqns = `${eqnsA},${eqnsB},${eqnsC}`;
+                    }
+                }
+
+                // MQTT
+                var mqttCheckbox = chDiv.querySelector(`input[name="mqtt_${chanNum}"]`);
+                if (mqttCheckbox) {
+                    chData.mqtt = mqttCheckbox.checked;
+                    if (chData.mqtt) {
+                        var stInp = chDiv.querySelector(`input[name="topic_state_${chanNum}"]`);
+                        var cmdInp= chDiv.querySelector(`input[name="topic_cmd_${chanNum}"]`);
+                        chData.topic_state = stInp ? stInp.value.trim() : '';
+                        chData.topic_cmd   = cmdInp ? cmdInp.value.trim() : '';
+
+                        var retainInp = chDiv.querySelector(`input[name="mqtt_retained_${chanNum}"]`);
+                        if (retainInp) {
+                            chData.mqtt_retained = retainInp.checked;
+                        }
+                    }
+                } else {
+                    chData.mqtt = false;
+                }
+                channelsArray.push(chData);
+            });
+
+            if (channelsArray.length === 0) {
+                telemetryMessage.style.color = 'orange';
+                telemetryMessage.textContent = 'No valid changes.';
+                setTimeout(() => {
+                    telemetryMessage.textContent = '';
+                }, 3000);
+                return;
+            }
+
+            fetch('/api/send/telemetry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    from: callsign,
+                    channels: channelsArray
+                })
+            })
+            .then(function(r) {
+                if (!r.ok) {
+                    return r.json().then(d => { throw new Error(d.error || 'Unknown'); });
+                }
+                return r.json();
+            })
+            .then(function(resp) {
+                console.log("Telemetry updated:", resp);
+                telemetryMessage.style.color = 'green';
+                telemetryMessage.textContent = 'Telemetry updated successfully!';
+                changedChannels.clear();
+                setTimeout(() => {
+                    telemetryMessage.textContent = '';
+                }, 3000);
+            })
+            .catch(function(err) {
+                console.error("Telemetry update error:", err);
+                telemetryMessage.style.color = 'red';
+                telemetryMessage.textContent = 'Error: ' + err.message;
+            });
+        });
+
+        function clearTelemetryForm() {
+            telemetryForm.reset();
+            telemetryChannelsContainer.innerHTML = '';
+            telemetryMessage.textContent = '';
+            changedChannels.clear();
+        }
+
+        function isChecked(val) {
+            if (typeof val === 'boolean') return val;
+            if (typeof val === 'number') return val === 1;
+            if (typeof val === 'string') {
+                return (val.toLowerCase() === '1' || val.toLowerCase() === 'true');
+            }
+            return false;
+        }
+        function capitalizeFirstLetter(str) {
+            return str.charAt(0).toUpperCase() + str.slice(1);
+        }
+
+        // Channel add logic
+        function countExistingChannels() {
+            var channels = telemetryChannelsContainer.querySelectorAll('.telemetry-channel');
+            var counts = { analogue: 0, digital: 0 };
+            channels.forEach(function(div) {
+                var lb = div.querySelector('label').textContent;
+                var match = lb.match(/\((\w+)\)/);
+                var cType = match ? match[1].toLowerCase() : 'digital';
+                if (cType === 'analogue') counts.analogue++;
+                else counts.digital++;
+            });
+            return counts;
+        }
+
+        addAnalogueBtn.addEventListener('click', function() {
+            var counts = countExistingChannels();
+            if (counts.analogue >= MAX_ANALOGUE_CHANNELS) {
+                alert(`Max of ${MAX_ANALOGUE_CHANNELS} analogue channels reached.`);
+                return;
+            }
+            var usedNums = Array.from(telemetryChannelsContainer.querySelectorAll('.telemetry-channel'))
+                .map(div => {
+                    var lb = div.querySelector('label').textContent;
+                    var mt = lb.match(/Channel (\d+)/);
+                    return mt ? parseInt(mt[1]) : null;
+                })
+                .filter(n => n !== null);
+
+            var newChanNum = null;
+            for (var i = 1; i <= MAX_ANALOGUE_CHANNELS; i++) {
+                if (!usedNums.includes(i)) {
+                    newChanNum = i;
+                    break;
+                }
+            }
+            if (newChanNum === null) {
+                alert("No free analogue channels left (1-5).");
+                return;
+            }
+            var newChan = {
+                channel: newChanNum,
+                type: 'analogue',
+                parameter: '',
+                unit: '',
+                value: ''
+            };
+            addTelemetryChannelToForm(newChan, true);
+        });
+
+        addDigitalBtn.addEventListener('click', function() {
+            var counts = countExistingChannels();
+            if (counts.digital >= MAX_DIGITAL_CHANNELS) {
+                alert(`Max of ${MAX_DIGITAL_CHANNELS} digital channels reached.`);
+                return;
+            }
+            var usedNums = Array.from(telemetryChannelsContainer.querySelectorAll('.telemetry-channel'))
+                .map(div => {
+                    var lb = div.querySelector('label').textContent;
+                    var mt = lb.match(/Channel (\d+)/);
+                    return mt ? parseInt(mt[1]) : null;
+                })
+                .filter(n => n !== null);
+
+            var newChanNum = null;
+            for (var i = 6; i <= 13; i++) {
+                if (!usedNums.includes(i)) {
+                    newChanNum = i;
+                    break;
+                }
+            }
+            if (newChanNum === null) {
+                alert("No free digital channels left (6-13).");
+                return;
+            }
+            var newChan = {
+                channel: newChanNum,
+                type: 'digital',
+                parameter: '',
+                unit: '',
+                value: 0
+            };
+            addTelemetryChannelToForm(newChan, true);
+        });
+
+        // ----------------------------------------------------------------------------
+        // Clear Button Functionality
+        // ----------------------------------------------------------------------------
+        var clearBtn = document.getElementById('clear-btn');
+        clearBtn.addEventListener('click', function() {
+            if (confirm("Are you sure you want to clear all markers and JSON history? This will not affect your callsign, comment, status, or symbol.")) {
+                // Remove specific items from localStorage
+                localStorage.removeItem('markers');
+                localStorage.removeItem('jsonHistory');
+
+                // Clear JSON history from UI
+                jsonEntries.innerHTML = '';
+                jsonBox.style.display = 'none';
+                document.getElementById('json-reopen-marker').style.display = 'block';
+
+                // Remove all markers from map
+                for (var st in markers) {
+                    if (markers.hasOwnProperty(st)) {
+                        if (markers[st].marker) map.removeLayer(markers[st].marker);
+                        if (markers[st].polyline) map.removeLayer(markers[st].polyline);
+                        markers[st].dots.forEach(d => map.removeLayer(d));
+                    }
+                }
+                markers = {};
+                storedMarkers = {};
+
+                // Optionally, reset the map view
+                map.setView([0, 0], 2);
+            }
+        });
+
+        // ----------------------------------------------------------------------------
+        // Reset Button Functionality
+        // ----------------------------------------------------------------------------
+        var resetBtn = document.getElementById('reset-btn');
+        resetBtn.addEventListener('click', function() {
+            if (confirm("Are you sure you want to reset all data? This will remove all markers, JSON history, and stored settings for this page.")) {
+                // List of keys to remove (page-specific)
+                var keysToRemove = ['markers', 'jsonHistory', 'callsign', 'comment', 'status', 'symbol'];
+
+                keysToRemove.forEach(function(key) {
+                    localStorage.removeItem(key);
+                });
+
+                // Clear input fields
+                document.getElementById('callsign-input').value = '';
+                document.getElementById('comment-input').value = '';
+                document.getElementById('status-input').value = '';
+                document.getElementById('symbol-input').value = '';
+                document.getElementById('symbol-preview-img').style.display = 'none';
+
+                // Clear JSON history from UI
+                jsonEntries.innerHTML = '';
+                jsonBox.style.display = 'none';
+                document.getElementById('json-reopen-marker').style.display = 'block';
+
+                // Remove all markers from map
+                for (var st in markers) {
+                    if (markers.hasOwnProperty(st)) {
+                        if (markers[st].marker) map.removeLayer(markers[st].marker);
+                        if (markers[st].polyline) map.removeLayer(markers[st].polyline);
+                        markers[st].dots.forEach(d => map.removeLayer(d));
+                    }
+                }
+                markers = {};
+                storedMarkers = {};
+
+                // Optionally, reset the map view
+                map.setView([0, 0], 2);
+            }
+        });
+
+    </script>
+</body>
+</html>
+

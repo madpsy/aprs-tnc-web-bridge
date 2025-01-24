@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>APRS TNC WebSocket and MQTT Integration</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        table, th, td {
+            border: 1px solid #aaa;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        a {
+            color: #007BFF;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .badge {
+            vertical-align: middle;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>APRS TNC WebSocket and MQTT Integration</h1>
+
+    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" class="badge">
+
+    <h2>Table of Contents</h2>
+    <ul>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#installation">Installation</a></li>
+        <li><a href="#usage">Usage</a>
+            <ul>
+                <li><a href="#command-line-interface-cli">Command-Line Interface (CLI)</a>
+                    <ul>
+                        <li><a href="#arguments">Arguments</a></li>
+                        <li><a href="#example">Example</a></li>
+                    </ul>
+                </li>
+            </ul>
+        </li>
+        <li><a href="#api-documentation">API Documentation</a>
+            <ul>
+                <li><a href="#endpoints">Endpoints</a>
+                    <ul>
+                        <li><a href="#send-raw-packet">Send Raw Packet</a></li>
+                        <li><a href="#send-beacon">Send Beacon</a></li>
+                        <li><a href="#send-location">Send Location</a></li>
+                        <li><a href="#send-telemetry">Send Telemetry</a></li>
+                        <li><a href="#receive-telemetry">Receive Telemetry</a></li>
+                    </ul>
+                </li>
+            </ul>
+        </li>
+        <li><a href="#websocket-interface">WebSocket Interface</a>
+            <ul>
+                <li><a href="#events">Events</a></li>
+            </ul>
+        </li>
+        <li><a href="#mqtt-integration">MQTT Integration</a></li>
+        <li><a href="#logging">Logging</a></li>
+        <li><a href="#contributing">Contributing</a></li>
+        <li><a href="#license">License</a></li>
+    </ul>
+
+    <h2 id="overview">Overview</h2>
+    <p>
+        This project provides a Python-based solution for integrating APRS (Automatic Packet Reporting System) with WebSocket and MQTT. It connects to an APRS Terminal Node Controller (TNC), processes APRS packets, offers a real-time web interface, and facilitates telemetry data management through MQTT.
+    </p>
+
+    <h2 id="features">Features</h2>
+    <ul>
+        <li><strong>TNC Connection:</strong> Establishes a TCP connection to an APRS TNC for sending and receiving APRS packets.</li>
+        <li><strong>WebSocket Interface:</strong> Real-time communication with web clients using Flask-SocketIO.</li>
+        <li><strong>REST API:</strong> Provides endpoints to send raw packets, beacons, locations, and manage telemetry data.</li>
+        <li><strong>MQTT Integration:</strong> Supports forwarding APRS data to MQTT brokers and subscribing to MQTT topics for telemetry commands.</li>
+        <li><strong>UDP Forwarding:</strong> Forwards APRS packets via UDP to specified iGate servers.</li>
+        <li><strong>Telemetry Management:</strong> Handles telemetry channels, including parameters, units, values, and equations.</li>
+        <li><strong>Logging:</strong> Logs APRS packets to YAML files for persistence and replay.</li>
+        <li><strong>Configurable:</strong> Offers extensive command-line arguments for customization.</li>
+    </ul>
+
+    <h2 id="installation">Installation</h2>
+
+    <h3>Prerequisites</h3>
+    <p>
+        <strong>Python 3.7+</strong>: Ensure Python is installed on your system. You can download it from <a href="https://www.python.org/downloads/">python.org</a>.
+    </p>
+
+    <h3>Clone the Repository</h3>
+    <pre><code>git clone https://github.com/yourusername/aprs-tnc-websocket-mqtt.git
+cd aprs-tnc-websocket-mqtt
+</code></pre>
+
+    <h3>Install Dependencies</h3>
+    <p>It's recommended to use a virtual environment:</p>
+    <pre><code>python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+</code></pre>
+
+    <p>Install the required Python packages:</p>
+    <pre><code>pip install -r requirements.txt
+</code></pre>
+
+    <p><em>If a <code>requirements.txt</code> is not provided, you can install dependencies manually:</em></p>
+    <pre><code>pip install eventlet aprslib flask flask_socketio paho-mqtt PyYAML
+</code></pre>
+
+    <h2 id="usage">Usage</h2>
+
+    <h3 id="command-line-interface-cli">Command-Line Interface (CLI)</h3>
+    <p>The script accepts various command-line arguments to configure its behavior.</p>
+
+    <h4 id="arguments">Arguments</h4>
+    <table>
+        <thead>
+            <tr>
+                <th>Short</th>
+                <th>Long</th>
+                <th>Description</th>
+                <th>Required</th>
+                <th>Default</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>-H</code></td>
+                <td><code>--host</code></td>
+                <td>TNC host address</td>
+                <td>Yes</td>
+                <td>N/A</td>
+            </tr>
+            <tr>
+                <td><code>-p</code></td>
+                <td><code>--port</code></td>
+                <td>TNC port number</td>
+                <td>Yes</td>
+                <td>N/A</td>
+            </tr>
+            <tr>
+                <td><code>-l</code></td>
+                <td><code>--listen</code></td>
+                <td>Flask server listen address in <code>host:port</code> format</td>
+                <td>No</td>
+                <td><code>0.0.0.0:5001</code></td>
+            </tr>
+            <tr>
+                <td><code>-r</code></td>
+                <td><code>--resume</code></td>
+                <td>Number of packets to load from YAML log on startup</td>
+                <td>No</td>
+                <td><code>100</code></td>
+            </tr>
+            <tr>
+                <td><code>--no-log</code></td>
+                <td></td>
+                <td>Disable logging of APRS packets to YAML files</td>
+                <td>No</td>
+                <td><code>False</code></td>
+            </tr>
+            <tr>
+                <td><code>-S</code></td>
+                <td><code>--send</code></td>
+                <td>iGate callsign for forwarding via UDP</td>
+                <td>No</td>
+                <td><code>None</code></td>
+            </tr>
+            <tr>
+                <td><code>--debug</code></td>
+                <td></td>
+                <td>Enable debug mode with verbose output</td>
+                <td>No</td>
+                <td><code>False</code></td>
+            </tr>
+            <tr>
+                <td><code>-d</code></td>
+                <td><code>--delay</code></td>
+                <td>Delay between sending frames to the TNC in milliseconds</td>
+                <td>No</td>
+                <td><code>10000</code> (10s)</td>
+            </tr>
+            <tr>
+                <td><code>--mqtt-host</code></td>
+                <td></td>
+                <td>MQTT broker host</td>
+                <td>No</td>
+                <td><code>127.0.0.1</code></td>
+            </tr>
+            <tr>
+                <td><code>--mqtt-port</code></td>
+                <td></td>
+                <td>MQTT broker port</td>
+                <td>No</td>
+                <td><code>1883</code></td>
+            </tr>
+            <tr>
+                <td><code>--mqtt-tls</code></td>
+                <td></td>
+                <td>Use TLS/SSL for MQTT connections</td>
+                <td>No</td>
+                <td><code>False</code></td>
+            </tr>
+            <tr>
+                <td><code>--mqtt-user</code></td>
+                <td></td>
+                <td>MQTT username</td>
+                <td>No</td>
+                <td><code>""</code></td>
+            </tr>
+            <tr>
+                <td><code>--mqtt-pass</code></td>
+                <td></td>
+                <td>MQTT password</td>
+                <td>No</td>
+                <td><code>""</code></td>
+            </tr>
+            <tr>
+                <td><code>-M</code></td>
+                <td><code>--mqtt-forward</code></td>
+                <td>Forward the same JSON payload (sent via UDP) to MQTT topic <code>kisstnc/payload</code></td>
+                <td>No</td>
+                <td><code>False</code></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h4 id="example">Example</h4>
+    <pre><code>python aprs_tnc.py -H tnc.example.com -p 8000 -l 127.0.0.1:8080 -S YOURCALLSIGN --debug -M --mqtt-host mqtt.example.com --mqtt-user user --mqtt-pass pass
+</code></pre>
+    <p>This command:</p>
+    <ul>
+        <li>Connects to the TNC at <code>tnc.example.com</code> on port <code>8000</code>.</li>
+        <li>Starts the Flask server listening on <code>127.0.0.1:8080</code>.</li>
+        <li>Enables debug mode.</li>
+        <li>Forwards APRS packets via UDP using the callsign <code>YOURCALLSIGN</code>.</li>
+        <li>Enables MQTT forwarding to <code>mqtt.example.com</code> with provided credentials.</li>
+    </ul>
+
+    <h2 id="api-documentation">API Documentation</h2>
+    <p>The application exposes a RESTful API for interacting with APRS packets and telemetry data.</p>
+
+    <h3 id="endpoints">Endpoints</h3>
+
+    <h4 id="send-raw-packet">Send Raw Packet</h4>
+    <p><strong>URL:</strong> <code>/api/send/raw</code></p>
+    <p><strong>Method:</strong> <code>POST</code></p>
+    <p><strong>Description:</strong> Sends a raw APRS packet to the TNC.</p>
+
+    <h5>Request Body:</h5>
+    <pre><code>{
+  "packet": "YOUR_RAW_APRS_PACKET"
+}
+</code></pre>
+
+    <h5>Responses:</h5>
+    <ul>
+        <li><strong>200 OK:</strong> Packet sent successfully.
+            <pre><code>{
+  "status": "sent"
+}
+</code></pre>
+        </li>
+        <li><strong>400 Bad Request:</strong> Missing or invalid parameters.
+            <pre><code>{
+  "error": "No 'packet' in JSON body"
+}
+</code></pre>
+        </li>
+        <li><strong>500 Internal Server Error:</strong> TNC socket unavailable or other server error.
+            <pre><code>{
+  "error": "TNC socket not available"
+}
+</code></pre>
+        </li>
+    </ul>
+
+    <h4 id="send-beacon">Send Beacon</h4>
+    <p><strong>URL:</strong> <code>/api/send/beacon</code></p>
+    <p><strong>Method:</strong> <code>POST</code></p>
+    <p><strong>Description:</strong> Sends a beacon packet.</p>
+
+    <h5>Request Body:</h5>
+    <pre><code>{
+  "from": "YOURCALL",
+  "status": "Your status message",
+  "path": "WIDE1-1" // Optional, default is "WIDE1-1"
+}
+</code></pre>
+
+    <h5>Responses:</h5>
+    <ul>
+        <li><strong>200 OK:</strong> Beacon sent successfully.
+            <pre><code>{
+  "status": "sent"
+}
+</code></pre>
+        </li>
+        <li><strong>400 Bad Request:</strong> Missing or invalid parameters.
+            <pre><code>{
+  "error": "'from' and 'status' must not be empty"
+}
+</code></pre>
+        </li>
+        <li><strong>500 Internal Server Error:</strong> TNC socket unavailable or other server error.
+            <pre><code>{
+  "error": "TNC socket not available"
+}
+</code></pre>
+        </li>
+    </ul>
+
+    <h4 id="send-location">Send Location</h4>
+    <p><strong>URL:</strong> <code>/api/send/location</code></p>
+    <p><strong>Method:</strong> <code>POST</code></p>
+    <p><strong>Description:</strong> Sends a location packet with latitude and longitude.</p>
+
+    <h5>Request Body:</h5>
+    <pre><code>{
+  "from": "YOURCALL",
+  "latitude": 37.7749,
+  "longitude": -122.4194,
+  "to": "APLRT1",            // Optional, default is "APLRT1"
+  "path": "WIDE1-1",         // Optional, default is "WIDE1-1"
+  "symbol_table": "/",       // Optional, default is "/"
+  "symbol": "L",             // Optional, default is "L"
+  "comment": "Your comment"  // Optional
+}
+</code></pre>
+
+    <h5>Responses:</h5>
+    <ul>
+        <li><strong>200 OK:</strong> Location sent successfully.
+            <pre><code>{
+  "status": "sent"
+}
+</code></pre>
+        </li>
+        <li><strong>400 Bad Request:</strong> Missing or invalid parameters.
+            <pre><code>{
+  "error": "Missing lat/lon"
+}
+</code></pre>
+        </li>
+        <li><strong>500 Internal Server Error:</strong> TNC socket unavailable or other server error.
+            <pre><code>{
+  "error": "TNC socket not available"
+}
+</code></pre>
+        </li>
+    </ul>
+
+    <h4 id="send-telemetry">Send Telemetry</h4>
+    <p><strong>URL:</strong> <code>/api/send/telemetry</code></p>
+    <p><strong>Methods:</strong> <code>POST</code>, <code>DELETE</code></p>
+
+    <h5>POST</h5>
+    <p><strong>Description:</strong> Adds or updates telemetry channels and sends telemetry data.</p>
+
+    <h6>Request Body:</h6>
+    <pre><code>{
+  "from": "YOURCALL",
+  "channels": [
+    {
+      "channel": 1,
+      "value": 23.5,
+      "parameter": "TEMP",
+      "unit": "C",
+      "eqns": "0,1,0",
+      "mqtt": true,
+      "topic_state": "telemetry/state/1",
+      "topic_cmd": "telemetry/cmd/1",
+      "mqtt_retained": true
+    },
+    {
+      "channel": 6,
+      "value": "1",
+      "parameter": "LIGHT",
+      "unit": "ON",
+      "mqtt": false
+    }
+    // Add more channels as needed
+  ]
+}
+</code></pre>
+
+    <h6>Responses:</h6>
+    <ul>
+        <li><strong>200 OK:</strong> Telemetry sent successfully or no changes detected.
+            <pre><code>{
+  "status": "telemetry sent"
+}
+</code></pre>
+            <em>Or</em>
+            <pre><code>{
+  "status": "no change in value"
+}
+</code></pre>
+        </li>
+        <li><strong>400 Bad Request:</strong> Missing or invalid parameters.
+            <pre><code>{
+  "error": "channel must be 1..13"
+}
+</code></pre>
+        </li>
+        <li><strong>500 Internal Server Error:</strong> Server error during telemetry processing.
+            <pre><code>{
+  "error": "Telemetry update fail: ..."
+}
+</code></pre>
+        </li>
+    </ul>
+
+    <h5>DELETE</h5>
+    <p><strong>Description:</strong> Deletes a telemetry channel.</p>
+
+    <h6>Request Body:</h6>
+    <pre><code>{
+  "from": "YOURCALL",
+  "channel": 1
+}
+</code></pre>
+
+    <h6>Responses:</h6>
+    <ul>
+        <li><strong>200 OK:</strong> Channel deleted successfully.
+            <pre><code>{
+  "status": "Channel 1 deleted for YOURCALL"
+}
+</code></pre>
+        </li>
+        <li><strong>404 Not Found:</strong> Channel not found.
+            <pre><code>{
+  "error": "Channel 1 not found for YOURCALL"
+}
+</code></pre>
+        </li>
+        <li><strong>400 Bad Request:</strong> Missing or invalid parameters.
+            <pre><code>{
+  "error": "channel must be 1..13"
+}
+</code></pre>
+        </li>
+    </ul>
+
+    <h4 id="receive-telemetry">Receive Telemetry</h4>
+    <p><strong>URL:</strong> <code>/api/receive/telemetry</code></p>
+    <p><strong>Method:</strong> <code>GET</code></p>
+    <p><strong>Description:</strong> Retrieves telemetry data for a specific callsign.</p>
+
+    <h5>Query Parameters:</h5>
+    <ul>
+        <li><code>from</code> (required): Callsign to retrieve telemetry data for.</li>
+    </ul>
+
+    <h5>Example Request:</h5>
+    <pre><code>GET /api/receive/telemetry?from=YOURCALL
+</code></pre>
+
+    <h5>Responses:</h5>
+    <ul>
+        <li><strong>200 OK:</strong> Returns telemetry data.
+            <pre><code>{
+  "from": "YOURCALL",
+  "channels": [
+    {
+      "channel": 1,
+      "type": "analogue",
+      "parameter": "TEMP",
+      "unit": "C",
+      "value": 23.5,
+      "eqns": "0,1,0",
+      "mqtt": true,
+      "mqtt_retained": true,
+      "topic_state": "telemetry/state/1",
+      "topic_cmd": "telemetry/cmd/1"
+    },
+    {
+      "channel": 6,
+      "type": "digital",
+      "parameter": "LIGHT",
+      "unit": "ON",
+      "value": "1",
+      "mqtt": false,
+      "mqtt_retained": false,
+      "topic_state": "",
+      "topic_cmd": ""
+    }
+    // More channels as applicable
+  ]
+}
+</code></pre>
+        </li>
+        <li><strong>400 Bad Request:</strong> Missing query parameter.
+            <pre><code>{
+  "error": "'from' query param is needed"
+}
+</code></pre>
+        </li>
+        <li><strong>404 Not Found:</strong> No telemetry data found for the given callsign.
+            <pre><code>{
+  "error": "No telemetry for YOURCALL"
+}
+</code></pre>
+        </li>
+    </ul>
+
+    <h2 id="websocket-interface">WebSocket Interface</h2>
+    <p>The application uses WebSockets to provide real-time updates of APRS packets to connected clients.</p>
+
+    <h3 id="events">Events</h3>
+
+    <h4 id="aprs_packet">`aprs_packet`</h4>
+    <p><strong>Description:</strong> Emitted whenever a new APRS packet is received or sent. Provides detailed information about the packet.</p>
+
+    <h5>Payload Structure:</h5>
+    <pre><code>{
+  "source": "SOURCE_CALLSIGN",
+  "destination": "DESTINATION_CALLSIGN",
+  "path": ["PATH1", "PATH2"], // Optional
+  "control": 3,
+  "pid": 240,
+  "info": "Packet information",
+  "timestamp": "2025-01-15 12:34:56",
+  "type": "rx" // or "tx"
+}
+</code></pre>
+
+    <h5>Example:</h5>
+    <pre><code>{
+  "source": "NOCALL",
+  "destination": "APLSRV",
+  "path": ["WIDE1-1", "WIDE2-2"],
+  "control": 3,
+  "pid": 240,
+  "info": "Hello APRS!",
+  "timestamp": "2025-01-15 12:34:56",
+  "type": "rx"
+}
+</code></pre>
+
+    <h5>Client Connection Behavior:</h5>
+    <p>Upon connecting, the client receives the last <code>n</code> APRS packets (as specified by the <code>--resume</code> CLI argument).</p>
+
+    <h2 id="mqtt-integration">MQTT Integration</h2>
+    <p>The application can integrate with an MQTT broker to publish and subscribe to telemetry data.</p>
+
+    <h3>Publishing</h3>
+    <ul>
+        <li><strong>Telemetry Payloads:</strong> When telemetry data is sent via the API, if MQTT forwarding is enabled (<code>-M</code> or <code>--mqtt-forward</code>), the same JSON payload is published to the MQTT topic <code>kisstnc/payload</code>.</li>
+        <li><strong>Telemetry Commands:</strong> When telemetry channel values change, corresponding commands are published to the specified MQTT <code>topic_cmd</code> for each channel.</li>
+    </ul>
+
+    <h3>Subscribing</h3>
+    <ul>
+        <li><strong>State Topics:</strong> The application subscribes to MQTT <code>topic_state</code> for each telemetry channel that has MQTT enabled. Incoming messages on these topics are used to update telemetry channel values and send corresponding APRS packets.</li>
+    </ul>
+
+    <h3>Configuration</h3>
+    <p>Configure MQTT settings via CLI arguments:</p>
+    <ul>
+        <li><code>--mqtt-host</code>: MQTT broker host (default: <code>127.0.0.1</code>)</li>
+        <li><code>--mqtt-port</code>: MQTT broker port (default: <code>1883</code>)</li>
+        <li><code>--mqtt-tls</code>: Use TLS/SSL for MQTT connections</li>
+        <li><code>--mqtt-user</code>: MQTT username</li>
+        <li><code>--mqtt-pass</code>: MQTT password</li>
+        <li><code>-M</code>, <code>--mqtt-forward</code>: Enable forwarding of UDP JSON payloads to MQTT topic <code>kisstnc/payload</code></li>
+    </ul>
+
+    <h2 id="logging">Logging</h2>
+    <p>
+        By default, the application logs APRS packets to a YAML file named <code>aprs_packets_&lt;host&gt;_&lt;port&gt;.yaml</code>, where <code>&lt;host&gt;</code> and <code>&lt;port&gt;</code> correspond to the TNC connection details.
+    </p>
+
+    <h3>Disable Logging</h3>
+    <p>Use the <code>--no-log</code> CLI argument to disable logging of APRS packets.</p>
+
+    <h2 id="contributing">Contributing</h2>
+    <p>Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes.</p>
+
+    <h2 id="license">License</h2>
+    <p>This project is licensed under the <a href="LICENSE">MIT License</a>.</p>
+
+</body>
+</html>
+
