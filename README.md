@@ -4,7 +4,11 @@ Documentation to come. See INSTALL to get going and http://127.0.0.1:5001/static
 
 Currently designed for a good sized screen (PC/laptop etc) rather than a phone as there are already apps for that.
 
-Essentially a KISS TNC (Serial/TCP) & APRS-IS direct -> Web interface (websockets/JSON API) with MQTT support for APRS analogue and digital telemetry channels as well as the usual mapping and messaging features. It can also act as a transparent bridge between a TNC and TCP, for example to allow a serial TNC to be accessible over a network.
+Essentially a KISS TNC (Serial/TCP) & APRS-IS direct -> Web interface (websockets/JSON API) with MQTT support for APRS analogue and digital telemetry channels as well as the usual mapping and messaging features.
+
+It can also act as a transparent bridge between a TNC and TCP, for example to allow a serial TNC to be accessible over a network. Tested with various software including APRSDroid.
+
+The telemetry manager handles all 13 channels and takes care of sequence, unit, EQNS updates etc. Has been tested with Tasmota and Shelly switches over MQTT (digital channels) as well as reading various analouge values.
 
 ![map](images/map-messages.png)
 
