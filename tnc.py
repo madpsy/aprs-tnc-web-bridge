@@ -1778,20 +1778,59 @@ def handle_proxy_client(client_socket):
     Handles data from a single proxy client, forwarding it immediately to the TNC connection
     (without delay). If the TNC is not connected, the data is discarded.
     """
-    global tnc_connection
+    global tnc_connection, proxy_clients
+    buffer = bytearray()
+
     try:
         while True:
-            data = client_socket.recv(4096)
-            if not data:
+            chunk = client_socket.recv(4096)
+            if not chunk:
+                # Client closed the connection
                 break
-            if tnc_connection and tnc_connection.is_connected():
-                tnc_connection.sendall(data)
-    except:
-        pass
+
+            # Append new data to the buffer
+            buffer.extend(chunk)
+
+            # Repeatedly look for two 0xC0 flags, meaning we have a complete KISS frame
+            while True:
+                # If there's no 0xC0 at all, we wait for more data
+                if KISS_FLAG not in buffer:
+                    break
+
+                # Find the first 0xC0
+                start_index = buffer.index(KISS_FLAG)
+
+                # Discard anything before that flag
+                if start_index != 0:
+                    buffer = buffer[start_index:]
+
+                # If we only have one flag in the buffer, we don't have a full frame yet
+                if buffer.count(KISS_FLAG) < 2:
+                    break
+
+                # Find the next 0xC0 after the first
+                end_index = buffer.find(KISS_FLAG, start_index + 1)
+                if end_index == -1:
+                    break
+
+                # Extract that entire KISS frame (including the second flag)
+                frame = buffer[:end_index + 1]
+
+                # Remove the frame bytes from the buffer
+                buffer = buffer[end_index + 1:]
+
+                # Forward this complete KISS frame to the TNC (if connected)
+                if tnc_connection and tnc_connection.is_connected():
+                    tnc_connection.sendall(frame)
+
+    except Exception as e:
+        print(f"[Proxy] Error handling client: {e}")
+
     finally:
         if proxy_clients is not None and client_socket in proxy_clients:
             proxy_clients.remove(client_socket)
         client_socket.close()
+
 
 def start_proxy_server(port):
     """
