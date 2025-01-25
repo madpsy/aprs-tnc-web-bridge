@@ -2,11 +2,13 @@
 
 Documentation to come. See INSTALL to get going and http://127.0.0.1:5001/static/readme.html for more details. 
 
-Currently designed for a good sized screen (PC/laptop etc) rather than a phone as there are already apps for that.
+Currently designed for a good sized screen (PC/laptop etc) rather than a phone as there are already apps for that. Note: This is very much early stages and not all packets are decoded or utilised.
 
-Essentially a KISS TNC (Serial/TCP) & APRS-IS direct -> Web interface (websockets/JSON API) with MQTT support for APRS analogue and digital telemetry channels as well as the usual mapping and messaging features.
+At a very basic level this sends raw and decoded APRS packets over websockets and receives raw packets and formatted location/message types over a JSON based API.
 
-TNCs which have been tested include CA2RXU's LoRa iGate and Tracker firmware. NinoTNC and the VGC VR-N76 HT.
+Essentially it is KISS TNC (Serial/TCP) & APRS-IS direct -> Web interface (websockets/JSON API) with MQTT support for APRS analogue and digital telemetry channels as well as the usual mapping and messaging features.
+
+TNCs which have been tested include CA2RXU's LoRa iGate and Tracker firmware, NinoTNC and the VGC VR-N76 HT.
 
 It can also act as a transparent bridge between a TNC and TCP, for example to allow a serial TNC to be accessible over a network. Tested with various software including APRSDroid.
 
