@@ -4,7 +4,7 @@ Documentation to come. See INSTALL to get going and http://127.0.0.1:5001/static
 
 Currently designed for a good sized screen (PC/laptop etc) rather than a phone as there are already apps for that. Note: This is very much early stages and not all packets are decoded or utilised.
 
-At a very basic level this sends raw and decoded APRS packets over websockets and receives raw packets and formatted location/message types over a JSON based API.
+At a very basic level this sends raw and decoded APRS packets over websockets as JSON and receives raw packets and formatted location/message types over a JSON based API.
 
 Essentially it is KISS TNC (Serial/TCP) & APRS-IS direct -> Web interface (websockets/JSON API) with MQTT support for APRS analogue and digital telemetry channels as well as the usual mapping and messaging features.
 
