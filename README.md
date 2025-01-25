@@ -1,5 +1,7 @@
 # aprs-tnc-web-bridge
 
+Thanks for checking out this attempt of a modern take on a modern looking browser based APRS system. It is very much a first attempt and MRs are very much welcomed!
+
 Documentation to come. See INSTALL to get going and http://127.0.0.1:5001/static/readme.html for more details. 
 
 Currently designed for a good sized screen (PC/laptop etc) rather than a phone as there are already apps for that. Note: This is very much early stages and not all packets are decoded or utilised.
