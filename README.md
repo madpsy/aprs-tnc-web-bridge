@@ -2,6 +2,8 @@
 
 Thanks for checking out this attempt of a modern looking browser based APRS client (though is actually much more than that). It is very much a first attempt and MRs are very much welcomed! You can build your own frontends on top of its websocket server and APIs.
 
+The idea is you the Python application on a computer which has a connection to the TNC and the built in web server is then available to any browser/client on the network.
+
 Documentation to come. See INSTALL to get going and http://127.0.0.1:5001/static/readme.html for more details. 
 
 Currently designed for a good sized screen (PC/laptop etc) rather than a phone as there are already apps for that. Note: This is very much early stages and not all packets are decoded or utilised.
