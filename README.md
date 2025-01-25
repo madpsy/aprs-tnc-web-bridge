@@ -8,7 +8,7 @@ Essentially a KISS TNC (Serial/TCP) & APRS-IS direct -> Web interface (websocket
 
 It can also act as a transparent bridge between a TNC and TCP, for example to allow a serial TNC to be accessible over a network. Tested with various software including APRSDroid.
 
-The telemetry manager handles all 13 channels and takes care of sequence, unit, EQNS updates etc. Has been tested with Tasmota and Shelly switches over MQTT (digital channels) as well as reading various analouge values.
+The telemetry manager handles all 13 channels and takes care of sequence, unit, EQNS updates etc. Has been tested with Tasmota and Shelly switches over MQTT (digital channels) as well as reading various analouge values. This also has a JSON API endpoint to send updates to.
 
 ![map](images/map-messages.png)
 
