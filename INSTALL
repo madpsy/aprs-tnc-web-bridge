@@ -3,10 +3,12 @@ source venv/bin/activate
 pip3 install -r requirements.txt
 python3 tnc.py
 
-On first run it will generate a default settings.yaml file
-
-You can edit the file or simply run tnc.py again and configure via the /static/settings.html page (link also on bottom right of map)
 
 To view the web interface, visit:
-http://<IP of host>:5001/
+http://127.0.0.1:5001/
 
+By default it will listen on all interfaces so can also access from any host on the same network.
+
+There is a link to the settings in the bottom right of the map, or go direct:
+
+http://127.0.0.1:5001/static/settings.html
