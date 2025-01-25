@@ -17,6 +17,8 @@ mqtt_tls: false
 mqtt_user: ''
 no_log: false
 port: 1234
+proxy_enabled: false
+proxy_port: 5002
 resume: 0
 send: null
 telemetry_interval: 120

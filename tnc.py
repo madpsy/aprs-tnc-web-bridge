@@ -57,19 +57,19 @@ aprs_callsign = ""
 aprs_host = "rotate.aprs2.net"
 aprs_port = 14580
 aprs_socket = None
-aprs_lock = threading.Lock()  # To synchronize access to APRS socket
+aprs_lock = threading.Lock()  # To synchronise access to APRS socket
 
-# Initialize Flask app
+# Initialise Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 
-# Initialize SocketIO without passing the app initially
+# Initialise SocketIO without passing the app initially
 socketio = SocketIO(async_mode='eventlet')  # Explicitly set eventlet as async mode
 
 # Deque for storing the last 'r' packets (maxlen set in main)
 packet_history = deque()
 
-# Initialize settings
+# Initialise settings
 CONFIG_FILE = 'settings.yaml'
 config_lock = threading.Lock()
 config = {}
@@ -117,11 +117,13 @@ DEFAULT_SETTINGS = {
     'mqtt_pass': '',
     'mqtt_forward': False,
     'telemetry_interval': 120,
-    # 'enable_aprs_is': False,  # Removed as per requirements
     'aprs_callsign': None,
     'aprs_host': 'rotate.aprs2.net',
     'aprs_port': 14580,
-    'aprs_filter': 'm/100'  # New setting for APRS-IS filter
+    'aprs_filter': 'm/100',
+    # Newly added defaults for the proxy
+    'proxy_enabled': False,
+    'proxy_port': 5002
 }
 
 def write_default_settings():
@@ -175,7 +177,7 @@ def validate_settings():
             print("Error: 'aprs_callsign' must be set when 'connection_type' is 'aprs-is'.")
             exit(1)
     # Validate aprs_filter (basic validation)
-    aprs_filter = config.get('aprs_filter', 'm/100')  # Use the configurable filter
+    aprs_filter = config.get('aprs_filter', 'm/100')
     if not isinstance(aprs_filter, str) or not aprs_filter.startswith('m/'):
         print("Error: 'aprs_filter' must be a string starting with 'm/'.")
         exit(1)
@@ -207,7 +209,7 @@ def manage_settings():
                     yaml.dump(config, f)
             except Exception as e:
                 return jsonify({"error": f"Failed to write settings: {e}"}), 500
-        # Restart the program to apply new settings
+        # Restart the programme to apply new settings
         def restart():
             time.sleep(1)  # Delay to ensure response is sent
             python = sys.executable
@@ -504,6 +506,8 @@ def handle_kiss_frame(frame, filename, no_log=False, igate_callsign=None):
     if not parsed:
         # Forward raw packet to MQTT (if enabled)
         if mqtt_forward and mqtt_manager:
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            full_aprs_packet = frame.hex()  # As a fallback
             payload = {
                 "igate": igate_callsign,
                 "type": "rx",
@@ -515,7 +519,6 @@ def handle_kiss_frame(frame, filename, no_log=False, igate_callsign=None):
             except Exception as e:
                 print("[MQTT] Error publishing raw packet:", e)
         return
-
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if config.get('debug'):
@@ -623,7 +626,6 @@ class MqttManager:
         topic = msg.topic
         payload_str = msg.payload.decode('utf-8', errors='ignore').strip()
 
-        # We only store (topic, "state") now:
         key_state = (topic, "state")
         if key_state in self.channels_by_topic:
             from_call, ch_num = self.channels_by_topic[key_state]
@@ -661,16 +663,13 @@ class MqttManager:
                     try:
                         old_val = float(old_val)
                     except:
-                        # if it's not parseable, treat it as changed
                         old_val = None
 
-                # Compare up to 2 decimal places
                 if old_val is not None and round(old_val, 2) == round(new_val, 2):
                     if config.get('debug'):
                         print(f"[MQTT] ch{channel} no real change: old={old_val}, new={new_val}")
                     return
 
-                # Otherwise it's a real change at 2-decimal level
                 ch_data['value'] = new_val
                 self.telemetry_manager.save_state()
 
@@ -705,7 +704,6 @@ class MqttManager:
                         print(f"[MQTT] ch{channel} no real change: old={old_val}, new={new_val}")
                     return
 
-                # It's changed
                 ch_data['value'] = new_val
                 self.telemetry_manager.save_state()
                 if config.get('debug'):
@@ -911,8 +909,7 @@ class TelemetryManager:
             else:
                 ch_data = channels[channel]
 
-                # [CHANGED] Save the old topic_state (for unsub/resub) only
-                old_topic_state = ch_data.get('topic_state')  # [CHANGED]
+                old_topic_state = ch_data.get('topic_state')
 
                 if parameter is not None:
                     parameter = parameter.replace(',', '')
@@ -963,12 +960,10 @@ class TelemetryManager:
                     if not topic_state or not topic_cmd:
                         raise ValueError("mqtt=true requires topic_state & topic_cmd.")
                     if not ch_data.get('mqtt'):
-                        # was false, now true
                         changes['mqtt_changed'] = True
                     else:
-                        # [CHANGED] If previously mqtt=True, but topic_state changes, set mqtt_changed
-                        if topic_state != old_topic_state:  # [CHANGED]
-                            changes['mqtt_changed'] = True   # [CHANGED]
+                        if topic_state != old_topic_state:
+                            changes['mqtt_changed'] = True
 
                     ch_data['mqtt'] = True
                     ch_data['topic_state'] = topic_state
@@ -987,8 +982,7 @@ class TelemetryManager:
 
                 self.save_state()
 
-                # [CHANGED] Store the old topic_state in changes so we can remove it if changed
-                changes['old_topic_state'] = old_topic_state  # [CHANGED]
+                changes['old_topic_state'] = old_topic_state
                 return changes
 
     def _convert_digital_value(self, val):
@@ -1152,6 +1146,10 @@ def receive_data(conn, connection_type, config, filename, no_log, igate_callsign
                 if len(data) == 0:
                     continue
 
+            # >>> If proxy is enabled, forward raw data to all connected proxy clients
+            if proxy_clients is not None:
+                bridging_broadcast(data)
+
             buffer.extend(data)
             while True:
                 if KISS_FLAG in buffer:
@@ -1251,7 +1249,7 @@ def telemetry_background_task(telemetry_manager, interval_minutes):
             msgs = telemetry_manager.generate_telemetry_messages(from_call, {
                 'parameter_changed': True,
                 'unit_changed': True,
-                'value_changed': True,        # ensure T# lines are sent
+                'value_changed': True,
                 'eqns_changed': has_eqns,
                 'mqtt_changed': False
             })
@@ -1272,7 +1270,7 @@ def aprs_pass(callsign):
         callsign = callsign[:stophere]
     realcall = callsign.upper()[:10]
 
-    # Initialize hash
+    # Initialise hash
     hash_val = 0x73E2
     i = 0
     length = len(realcall)
@@ -1292,7 +1290,7 @@ def connect_aprs_is():
     Establishes a connection to the APRS-IS server and logs in.
     Enhanced with detailed debug outputs.
     """
-    global aprs_socket, aprs_callsign, aprs_host, aprs_port, config, DEBUG
+    global aprs_socket, aprs_callsign, aprs_host, aprs_port, config
     while True:
         try:
             if config.get('debug'):
@@ -1307,7 +1305,7 @@ def connect_aprs_is():
 
             # Generate passcode
             password = aprs_pass(aprs_callsign)
-            aprs_filter = config.get('aprs_filter', 'm/100')  # Use the configurable filter
+            aprs_filter = config.get('aprs_filter', 'm/100')
             login_str = f"user {aprs_callsign} pass {password} vers lora-aprs.live-client 1.0.0 filter {aprs_filter} \r\n"
 
             if config.get('debug'):
@@ -1368,7 +1366,7 @@ def send_to_aprs_is(packet):
     """
     Sends a modified APRS packet to the APRS-IS server with the path set to 'TCPIP'.
     """
-    global aprs_socket, aprs_callsign, aprs_host, aprs_port, config, DEBUG, aprs_lock
+    global aprs_socket, aprs_callsign, aprs_host, aprs_port, config, aprs_lock, aprs_enabled
     if not aprs_enabled:
         return
 
@@ -1396,74 +1394,53 @@ def handle_aprs_is_packet(packet):
     Forwards non-parseable raw packets to MQTT as raw data.
     """
     try:
-        # Attempt to decode the APRS packet
         aprs_data = decode_aprs(packet)
-        # Capture the current timestamp
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         if aprs_data:
-            # If parsing is successful, add timestamp and type
             aprs_data['timestamp'] = current_time
-            aprs_data['type'] = 'rx'  # 'rx' for received
+            aprs_data['type'] = 'rx'
             
-            # Emit the parsed data to WebSocket clients
             socketio.emit('aprs_packet', aprs_data)
-            # Append the parsed packet to the history deque
             packet_history.append(aprs_data)
     
-            # Log the parsed packet to the YAML file if logging is enabled
             if not no_log:
                 with open(filename, 'a') as yf:
                     yaml.dump(aprs_data, yf, sort_keys=False, explicit_start=True)
     
-            # Debugging output if enabled
             if config.get('debug'):
                 print("APRS-IS Parsed Data:", aprs_data)
         else:
-            # If parsing fails, handle as a raw packet
             if config.get('debug'):
                 print(f"APRS decode failed for packet: {packet}")
             
-            # Create a dictionary for the raw packet with timestamp
             raw_packet_info = {
                 "raw": packet,
                 "timestamp": current_time
             }
             
-            # Emit the raw packet to WebSocket clients
             socketio.emit('aprs_packet', raw_packet_info)
-            # Append the raw packet to the history deque
             packet_history.append(raw_packet_info)
     
-            # **Forward Non-Parseable Raw Packet to MQTT**
-            # Check if MQTT forwarding is enabled and MQTT manager is available
             if config.get('mqtt_forward') and mqtt_manager and igate_callsign:
-                # Prepare the payload as a JSON string
                 mqtt_payload = {
-                    "igate": igate_callsign,      # Your iGate callsign
-                    "type": "raw",                # Indicate that this is a raw packet
-                    "content": packet,            # The raw APRS packet content
-                    "timestamp": current_time     # Timestamp of the packet
+                    "igate": igate_callsign,
+                    "type": "raw",
+                    "content": packet,
+                    "timestamp": current_time
                 }
-                
-                # Convert the payload to a JSON string
                 mqtt_payload_str = json.dumps(mqtt_payload)
-                
-                # Define the MQTT topic for raw packets
                 mqtt_topic = "kisstnc/payload"
                 
                 try:
-                    # Publish the raw packet to the specified MQTT topic
                     mqtt_manager.publish_payload(mqtt_topic, mqtt_payload_str)
                     
                     if config.get('debug'):
                         print(f"[MQTT] Forwarded raw packet to topic '{mqtt_topic}': {mqtt_payload_str}")
                 except Exception as e:
-                    # Handle any exceptions that occur during MQTT publishing
                     print(f"[MQTT] Error publishing raw packet to '{mqtt_topic}': {e}")
     
     except Exception as e:
-        # Catch and log any unexpected exceptions during packet handling
         print(f"[ERROR] handle_aprs_is_packet: {e}")
 
 
@@ -1490,10 +1467,9 @@ def receive_aprs_is_data():
                 line, buffer = buffer.split('\n', 1)
                 line = line.strip()
                 if not line or line.startswith("#"):
-                    continue  # Skip empty lines and comments
+                    continue
                 if config.get('debug'):
                     print(f"Received from APRS-IS: {line}")
-                # Process the received packet
                 handle_aprs_is_packet(line)
         except Exception as e:
             print(f"Error receiving data from APRS-IS: {e}")
@@ -1655,22 +1631,16 @@ def send_telemetry():
                     ch_data = telemetry_manager.state[from_call]['channels'][ch_num]
                     is_mqtt = ch_data.get('mqtt',False)
 
-                    # [CHANGED] If we truly changed MQTT (only if 'mqtt_changed') handle unsub/resub:
                     if mqtt_manager and changes.get('mqtt_changed'):
-                        # get old topic_state
-                        old_ts = changes.get('old_topic_state')  # [CHANGED]
+                        old_ts = changes.get('old_topic_state')
 
                         if is_mqtt:
-                            # We turned MQTT on or changed topic_state
                             new_ts = ch_data['topic_state']
                             new_tc = ch_data['topic_cmd']
-                            # If old_ts != new_ts, remove the old subscription
                             if old_ts and old_ts != new_ts:
                                 mqtt_manager.remove_channel(old_ts, None)
-                            # Add the new subscription
                             mqtt_manager.add_channel(from_call, ch_num, new_ts, new_tc)
                         else:
-                            # We turned MQTT off
                             if old_ts:
                                 mqtt_manager.remove_channel(old_ts, None)
 
@@ -1693,7 +1663,6 @@ def send_telemetry():
             except Exception as e:
                 return jsonify({"error":f"Mark sent failed: {e}"}),500
 
-            # Publish new values to topic_cmd if channel is mqtt-enabled
             if overall_changes['value_changed'] and mqtt_manager:
                 with telemetry_manager.lock:
                     for ch_update in chans:
@@ -1701,7 +1670,7 @@ def send_telemetry():
                         ch_data = telemetry_manager.state[from_call]['channels'].get(ch_num, {})
                         if ch_data.get('mqtt'):
                             tc = ch_data['topic_cmd']
-                            val_to_pub = ch_data['value']  # should be a str/float
+                            val_to_pub = ch_data['value']
                             retained_flag = ch_data.get('mqtt_retained', False)
                             mqtt_manager.publish_cmd(tc, val_to_pub, retained=retained_flag)
 
@@ -1721,7 +1690,7 @@ def send_telemetry():
         with telemetry_manager.lock:
             ch_data = telemetry_manager.state.get(from_call,{}).get('channels',{}).get(ch_num)
             if ch_data and ch_data.get('mqtt'):
-                if mqtt_manager and 'topic_state' in ch_data:  # [CHANGED]
+                if mqtt_manager and 'topic_state' in ch_data:
                     old_ts = ch_data['topic_state']
                     mqtt_manager.remove_channel(old_ts, None)
 
@@ -1782,20 +1751,80 @@ def handle_connect():
         emit('aprs_packet', pkt)
 
 ###############################################################################
+#                     PROXY (TRANSPARENT TCP BRIDGE) CODE                     #
+###############################################################################
+# Global set of connected proxy clients if proxy_enabled is true
+proxy_clients = None
+
+def bridging_broadcast(data):
+    """
+    Forwards raw data from TNC to all connected proxy clients.
+    """
+    global proxy_clients
+    if proxy_clients is None:
+        return
+    to_remove = []
+    for client in proxy_clients:
+        try:
+            client.sendall(data)
+        except:
+            to_remove.append(client)
+    for c in to_remove:
+        proxy_clients.remove(c)
+        c.close()
+
+def handle_proxy_client(client_socket):
+    """
+    Handles data from a single proxy client, forwarding it immediately to the TNC connection
+    (without delay). If the TNC is not connected, the data is discarded.
+    """
+    global tnc_connection
+    try:
+        while True:
+            data = client_socket.recv(4096)
+            if not data:
+                break
+            if tnc_connection and tnc_connection.is_connected():
+                tnc_connection.sendall(data)
+    except:
+        pass
+    finally:
+        if proxy_clients is not None and client_socket in proxy_clients:
+            proxy_clients.remove(client_socket)
+        client_socket.close()
+
+def start_proxy_server(port):
+    """
+    Starts a TCP server socket that listens on the specified port. For each new client,
+    spawns a green thread to handle forwarding data from that client to the TNC.
+    """
+    server = eventlet.listen(('0.0.0.0', port))
+    print(f"Proxy server listening on 0.0.0.0:{port} ...")
+
+    def accept_clients(sock):
+        while True:
+            client_socket, addr = sock.accept()
+            if proxy_clients is not None:
+                proxy_clients.add(client_socket)
+                print(f"[Proxy] Client connected from {addr}")
+                eventlet.spawn_n(handle_proxy_client, client_socket)
+
+    eventlet.spawn_n(accept_clients, server)
+
+###############################################################################
 #                           MAIN FUNCTION                                     #
 ###############################################################################
 def main():
     load_settings()
 
-    # Declare all global variables before any assignment
     global DEBUG, tnc_connection, no_log, filename, igate_callsign
     global telemetry_manager, outgoing_aprs_queue
     global mqtt_manager, mqtt_host, mqtt_port, mqtt_tls, mqtt_user, mqtt_pass
     global mqtt_forward
     global aprs_enabled, aprs_callsign, aprs_host, aprs_port, aprs_socket
-    global connection_type  # Added to global variables
+    global connection_type
+    global proxy_clients
 
-    # Now assign the global variable
     connection_type = config['connection_type']
 
     host = config['host']
@@ -1818,7 +1847,11 @@ def main():
     aprs_callsign_conf = config['aprs_callsign']
     aprs_host_conf = config['aprs_host']
     aprs_port_conf = config['aprs_port']
-    aprs_filter_conf = config['aprs_filter']  # New configuration for APRS-IS filter
+    aprs_filter_conf = config['aprs_filter']
+
+    # Newly loaded proxy settings
+    proxy_enabled = config['proxy_enabled']
+    proxy_port = config['proxy_port']
 
     DEBUG = debug_flag
     no_log = no_log_flag
@@ -1857,7 +1890,6 @@ def main():
     else:  # 'tcp'
         filename = f"aprs_packets_{connection_type}_{host}_{port}.yaml"
 
-    # **Debug Print to Confirm Filename**
     print(f"Using filename for logging: {filename}")
 
     packet_history = deque(maxlen=resume_count)
@@ -1877,17 +1909,14 @@ def main():
     telemetry_manager = TelemetryManager(filepath='telemetry.yaml')
     outgoing_aprs_queue = queue.Queue()
 
-    # Check if we need MQTT
     all_data = telemetry_manager.get_telemetry_data()
     any_mqtt_enabled = any(
         ch_data.get('mqtt') for _call, val in all_data.items()
         for _ch, ch_data in val.get('channels',{}).items()
     )
 
-    # ### MQTT-FORWARD: if user enabled, we force creation of MqttManager
     if any_mqtt_enabled or mqtt_forward:
         mqtt_manager = MqttManager(mqtt_host, mqtt_port, mqtt_tls, mqtt_user, mqtt_pass, telemetry_manager)
-        # Register existing channels
         for from_c, val in all_data.items():
             for ch_n, ch_d in val.get('channels',{}).items():
                 if ch_d.get('mqtt'):
@@ -1897,7 +1926,6 @@ def main():
     else:
         mqtt_manager = None
 
-    # Enqueue initial telemetry messages
     for fc in telemetry_manager.get_telemetry_data():
         v = telemetry_manager.state[fc]
         has_eqns = any(
@@ -1907,14 +1935,20 @@ def main():
         msgs = telemetry_manager.generate_telemetry_messages(fc, {
             'parameter_changed': True,
             'unit_changed': True,
-            'value_changed': True,        # Changed to include telemetry values in initial messages
+            'value_changed': True,
             'eqns_changed': has_eqns,
             'mqtt_changed': False
         })
         for m in msgs:
             outgoing_aprs_queue.put(m)
 
-    # Start the TNC connection and receive thread in a background thread only if not 'aprs-is'
+    # If proxy is enabled, initialise proxy_clients set and start the proxy server
+    if proxy_enabled:
+        proxy_clients = set()
+        start_proxy_server(proxy_port)
+    else:
+        proxy_clients = None
+
     if connection_type != 'aprs-is':
         def connect_and_receive():
             global tnc_connection
@@ -1928,7 +1962,7 @@ def main():
                         tnc_connection = TNCConnection('serial', device=device, baud=baud, timeout=1)
                     print("Connected to TNC.")
                     start_receive_thread(tnc_connection, connection_type, config, filename, no_log, igate_callsign, telemetry_manager)
-                    break  # Exit the loop once connected
+                    break
                 except Exception as e:
                     print(f"Error connecting TNC: {e}")
                     print("Retrying in 5 seconds...")
@@ -1937,26 +1971,18 @@ def main():
         tnc_thread = threading.Thread(target=connect_and_receive, daemon=True)
         tnc_thread.start()
     else:
-        # connection_type == 'aprs-is', do not connect to TNC
         tnc_connection = None
         print("Connection type is 'aprs-is'; TNC connection is skipped.")
 
-    # Initialize SocketIO
     socketio.init_app(app, async_mode='eventlet')
 
-    # ### APRS-IS Connection
     if aprs_enabled:
-        # Start APRS-IS connection in a separate green thread
         eventlet.spawn_n(connect_aprs_is)
-
-        # Start APRS-IS data reception thread
         eventlet.spawn_n(receive_aprs_is_data)
 
-    # Start the send_frames thread
     send_thread = threading.Thread(target=send_frames, args=(send_delay_ms,), daemon=True)
     send_thread.start()
 
-    # Start the telemetry background task with the telemetry_interval_minutes
     socketio.start_background_task(telemetry_background_task, telemetry_manager, telemetry_interval_minutes)
 
     print(f"Listening on {flask_ip}:{flask_port} ...")
