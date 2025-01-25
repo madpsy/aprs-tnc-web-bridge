@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>APRS TNC Settings</title>
+    <title>APRS Settings</title>
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Optional: Bootstrap Icons -->
@@ -19,7 +19,7 @@
 </head>
 <body>
     <div class="container">
-        <h1 class="mb-4">APRS TNC Settings</h1>
+        <h3>TNC Settings</h3>
         
         <!-- Alert Messages -->
         <div id="alert-container"></div>
@@ -186,7 +186,22 @@
             </div>
             
             <hr>
-            
+
+            <!-- Proxy Settings -->
+            <h3>Proxy Settings</h3>
+
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="proxy_enabled" name="proxy_enabled">
+                <label class="form-check-label" for="proxy_enabled">
+                    Enable Proxy
+                </label>
+            </div>
+            <div class="mb-3">
+                <label for="proxy_port" class="form-label">Proxy Port</label>
+                <input type="number" class="form-control" id="proxy_port" name="proxy_port" placeholder="e.g., 5002" min="1" max="65535">
+                <small class="form-text text-muted">If proxy is enabled, specify a valid port here.</small>
+            </div>
+
             <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Save Settings</button>
         </form>
     </div>
@@ -238,7 +253,6 @@
                     aprsCallsignInput.required = true;
                     aprsHostInput.required = true;
                     aprsPortInput.required = true;
-                    // aprs_filter is optional; no need to set required
                 }
             }
             
@@ -309,20 +323,23 @@
             // Handle form submission
             settingsForm.addEventListener('submit', function(event) {
                 event.preventDefault();
-                
+
+                // Scroll to the top so user can see alerts
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+
                 clearAlerts();
-                // Gather form data
-                const formData = new FormData(settingsForm);
-                const settings = {};
+                showAlert('Saving settings...', 'info');
                 
-                formData.forEach((value, key) => {
-                    const element = document.getElementById(key);
+                // Gather form data from *all* elements (including unchecked checkboxes)
+                const settings = {};
+                Array.from(settingsForm.elements).forEach(element => {
+                    if (!element.name) return;
                     if (element.type === 'checkbox') {
-                        settings[key] = element.checked;
+                        settings[element.name] = element.checked;
                     } else if (element.type === 'number') {
-                        settings[key] = Number(value);
+                        settings[element.name] = Number(element.value);
                     } else {
-                        settings[key] = value;
+                        settings[element.name] = element.value;
                     }
                 });
                 
@@ -336,6 +353,9 @@
                 })
                 .then(response => response.json().then(data => ({ status: response.status, body: data })))
                 .then(result => {
+                    // Clear the 'Saving settings...' alert
+                    clearAlerts();
+
                     if (result.status === 200) {
                         showAlert(result.body.status || 'Settings updated successfully.', 'success');
                         // Disable the form to prevent further submissions
@@ -348,6 +368,7 @@
                 })
                 .catch(error => {
                     console.error('Error updating settings:', error);
+                    clearAlerts();
                     showAlert('An error occurred while updating settings.', 'danger');
                 });
             });
