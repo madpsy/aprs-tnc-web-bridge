@@ -1,6 +1,6 @@
 # aprs-tnc-web-bridge
 
-Thanks for checking out this attempt of a modern take on a modern looking browser based APRS system. It is very much a first attempt and MRs are very much welcomed!
+Thanks for checking out this attempt of a modern looking browser based APRS client (though is actually much more than that). It is very much a first attempt and MRs are very much welcomed! You can build your own frontends on top of its websocket server and APIs.
 
 Documentation to come. See INSTALL to get going and http://127.0.0.1:5001/static/readme.html for more details. 
 
