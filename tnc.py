@@ -81,7 +81,7 @@ HTML_PAGE = """
 <head>
     <title>APRS TNC</title>
 </head>
-<frameset cols="50%,*" frameborder="1" border="2" framespacing="2">
+<frameset cols="70%,*" frameborder="1" border="2" framespacing="2">
     <!-- Left frame with map.html -->
     <frame src="/static/map.html" name="leftFrame">
     <!-- Right frame with messages.html -->
