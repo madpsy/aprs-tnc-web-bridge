@@ -116,12 +116,12 @@ DEFAULT_SETTINGS = {
     'mqtt_user': '',
     'mqtt_pass': '',
     'mqtt_forward': False,
+    'my_callsign': None,
     'telemetry_interval': 120,
     'aprs_callsign': None,
     'aprs_host': 'rotate.aprs2.net',
     'aprs_port': 14580,
     'aprs_filter': 'm/100',
-    # Newly added defaults for the proxy
     'proxy_enabled': False,
     'proxy_port': 5002
 }
