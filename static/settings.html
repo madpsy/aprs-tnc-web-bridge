@@ -20,10 +20,10 @@
 <body>
     <div class="container">
         <h3>TNC Settings</h3>
-        
+
         <!-- Alert Messages -->
         <div id="alert-container"></div>
-        
+
         <form id="settings-form">
             <!-- Connection Type -->
             <div class="mb-3">
@@ -34,7 +34,7 @@
                     <option value="aprs-is">APRS-IS</option>
                 </select>
             </div>
-            
+
             <!-- TCP Settings -->
             <div id="tcp-settings">
                 <div class="mb-3">
@@ -46,7 +46,7 @@
                     <input type="number" class="form-control" id="port" name="port" placeholder="e.g., 1234" min="1" max="65535" required>
                 </div>
             </div>
-            
+
             <!-- Serial Settings -->
             <div id="serial-settings" class="hidden">
                 <div class="mb-3">
@@ -56,96 +56,104 @@
                 <div class="mb-3">
                     <label for="baud" class="form-label">Baud Rate</label>
                     <input type="number" class="form-control" id="baud" name="baud" placeholder="e.g., 9600" min="1200" max="115200">
-                </div>
+		</div>
+		<!-- Delay -->
+            	<div class="mb-3">
+                    <label for="delay" class="form-label">Transmission Delay (ms)</label>
+                    <input type="number" class="form-control" id="delay" name="delay" placeholder="e.g., 10000" min="0">
+            	</div>
             </div>
-            
+
             <!-- APRS-IS Settings -->
             <div id="aprs-is-settings" class="hidden">
                 <h3>APRS-IS Settings</h3>
-                
+
                 <!-- APRS Callsign -->
                 <div class="mb-3">
                     <label for="aprs_callsign" class="form-label">APRS Callsign <span class="text-danger">*</span></label>
                     <input type="text" class="form-control" id="aprs_callsign" name="aprs_callsign" placeholder="e.g., YOURAPRSCALLSIGN" required>
                 </div>
-                
+
                 <!-- APRS Filter -->
                 <div class="mb-3">
                     <label for="aprs_filter" class="form-label">APRS Filter</label>
                     <input type="text" class="form-control" id="aprs_filter" name="aprs_filter" placeholder="e.g., m/100">
                     <small class="form-text text-muted">Define filters to limit the APRS-IS data you receive. Example: <code>m/100</code></small>
                 </div>
-                
+
                 <!-- APRS Host -->
                 <div class="mb-3">
                     <label for="aprs_host" class="form-label">APRS-IS Server Host</label>
                     <input type="text" class="form-control" id="aprs_host" name="aprs_host" placeholder="e.g., rotate.aprs2.net" required>
                 </div>
-                
+
                 <!-- APRS Port -->
                 <div class="mb-3">
                     <label for="aprs_port" class="form-label">APRS-IS Server Port</label>
                     <input type="number" class="form-control" id="aprs_port" name="aprs_port" placeholder="e.g., 14580" min="1" max="65535" required>
                 </div>
             </div>
-            
+
+            <!-- My Callsign Section -->
+            <h3>Callsign</h3>
+            <div class="mb-3">
+                <label for="my_callsign" class="form-label">Default Callsign+SSID</label>
+                <input type="text" class="form-control" id="my_callsign" name="my_callsign" placeholder="e.g., M5GHY-7">
+            </div>
+
+	    <h3>Other</h3>
             <!-- Listen -->
             <div class="mb-3">
                 <label for="listen" class="form-label">Listen (Host:Port)</label>
                 <input type="text" class="form-control" id="listen" name="listen" placeholder="e.g., 0.0.0.0:5001" required>
             </div>
-            
+
             <!-- Resume -->
             <div class="mb-3">
-                <label for="resume" class="form-label">Replay Count</label>
+                <label for="resume" class="form-label">Replay Packet Count</label>
                 <input type="number" class="form-control" id="resume" name="resume" placeholder="e.g., 100" min="0">
             </div>
-            
+
             <!-- No Log -->
             <div class="form-check mb-3">
                 <input class="form-check-input" type="checkbox" id="no_log" name="no_log">
                 <label class="form-check-label" for="no_log">
-                    Disable Logging
+                    Disable Packet Logging
                 </label>
             </div>
-            
-            <!-- iGate Callsign -->
+
+            <!-- iGate Callsign
             <div class="mb-3">
                 <label for="send" class="form-label">iGate Callsign for lora-aprs.live</label>
                 <input type="text" class="form-control" id="send" name="send" placeholder="Only specify if acting as an iGate">
             </div>
-            
+	    -->
+
             <!-- Debug -->
             <div class="form-check mb-3">
                 <input class="form-check-input" type="checkbox" id="debug" name="debug">
                 <label class="form-check-label" for="debug">
-                    Enable Debugging
+                    Enable Debug Output
                 </label>
             </div>
-            
-            <!-- Delay -->
-            <div class="mb-3">
-                <label for="delay" class="form-label">Transmission Delay (ms)</label>
-                <input type="number" class="form-control" id="delay" name="delay" placeholder="e.g., 10000" min="0">
-            </div>
-            
+
             <hr>
-            
+
             <!-- MQTT Settings -->
             <h3>MQTT Settings</h3>
-            
+
             <!-- MQTT Host -->
             <div class="mb-3">
                 <label for="mqtt_host" class="form-label">MQTT Host</label>
                 <input type="text" class="form-control" id="mqtt_host" name="mqtt_host" placeholder="e.g., 127.0.0.1">
             </div>
-            
+
             <!-- MQTT Port -->
             <div class="mb-3">
                 <label for="mqtt_port" class="form-label">MQTT Port</label>
                 <input type="number" class="form-control" id="mqtt_port" name="mqtt_port" placeholder="e.g., 1883" min="1" max="65535">
             </div>
-            
+
             <!-- MQTT TLS -->
             <div class="form-check mb-3">
                 <input class="form-check-input" type="checkbox" id="mqtt_tls" name="mqtt_tls">
@@ -153,38 +161,38 @@
                     Use TLS/SSL for MQTT
                 </label>
             </div>
-            
+
             <!-- MQTT Username -->
             <div class="mb-3">
                 <label for="mqtt_user" class="form-label">MQTT Username</label>
                 <input type="text" class="form-control" id="mqtt_user" name="mqtt_user" placeholder="MQTT Username">
             </div>
-            
+
             <!-- MQTT Password -->
             <div class="mb-3">
                 <label for="mqtt_pass" class="form-label">MQTT Password</label>
                 <input type="password" class="form-control" id="mqtt_pass" name="mqtt_pass" placeholder="MQTT Password">
             </div>
-            
+
             <!-- MQTT Forward -->
             <div class="form-check mb-3">
                 <input class="form-check-input" type="checkbox" id="mqtt_forward" name="mqtt_forward">
                 <label class="form-check-label" for="mqtt_forward">
-                    Enable MQTT Forwarding
+                    Enable MQTT Packet Forwarding
                 </label>
             </div>
-            
+
             <hr>
-            
+
             <!-- Telemetry Settings -->
             <h3>Telemetry Settings</h3>
-            
+
             <!-- Telemetry Interval -->
             <div class="mb-3">
-                <label for="telemetry_interval" class="form-label">Telemetry Interval (minutes)</label>
+                <label for="telemetry_interval" class="form-label">Telemetry Channel Interval (minutes)</label>
                 <input type="number" class="form-control" id="telemetry_interval" name="telemetry_interval" placeholder="e.g., 120" min="1">
             </div>
-            
+
             <hr>
 
             <!-- Proxy Settings -->
@@ -199,16 +207,16 @@
             <div class="mb-3">
                 <label for="proxy_port" class="form-label">Proxy Port</label>
                 <input type="number" class="form-control" id="proxy_port" name="proxy_port" placeholder="e.g., 5002" min="1" max="65535">
-                <small class="form-text text-muted">If proxy is enabled, specify a valid port here.</small>
+                <small class="form-text text-muted">If proxy is enabled, specify a valid listen port here.</small>
             </div>
 
             <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Save Settings</button>
         </form>
     </div>
-    
+
     <!-- Bootstrap JS and dependencies (Popper) -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
+
     <!-- JavaScript to handle form interactions -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -221,16 +229,16 @@
             const aprsPortInput = document.getElementById('aprs_port');
             const settingsForm = document.getElementById('settings-form');
             const alertContainer = document.getElementById('alert-container');
-            
+
             // Function to show/hide connection-specific settings
             function toggleConnectionSettings() {
                 const selected = connectionTypeSelect.value;
-                
+
                 // Hide all connection settings initially
                 tcpSettings.classList.add('hidden');
                 serialSettings.classList.add('hidden');
                 aprsIsSettings.classList.add('hidden');
-                
+
                 // Remove required attributes
                 document.getElementById('host').required = false;
                 document.getElementById('port').required = false;
@@ -239,7 +247,7 @@
                 aprsCallsignInput.required = false;
                 aprsHostInput.required = false;
                 aprsPortInput.required = false;
-                
+
                 if (selected === 'tcp') {
                     tcpSettings.classList.remove('hidden');
                     document.getElementById('host').required = true;
@@ -255,7 +263,7 @@
                     aprsPortInput.required = true;
                 }
             }
-            
+
             // Function to display alerts
             function showAlert(message, type='success') {
                 const alertDiv = document.createElement('div');
@@ -267,19 +275,19 @@
                 `;
                 alertContainer.appendChild(alertDiv);
             }
-            
+
             // Function to remove all alerts
             function clearAlerts() {
                 alertContainer.innerHTML = '';
             }
-            
+
             // Function to disable/enable the form
             function setFormDisabled(disabled) {
                 Array.from(settingsForm.elements).forEach(element => {
                     element.disabled = disabled;
                 });
             }
-            
+
             // Function to fetch and populate the form with current settings
             function fetchSettings() {
                 fetch('/api/settings')
@@ -310,16 +318,16 @@
                         showAlert('Failed to load settings.', 'danger');
                     });
             }
-            
+
             // Initial toggle based on default selection
             toggleConnectionSettings();
-            
+
             // Event listeners
             connectionTypeSelect.addEventListener('change', toggleConnectionSettings);
-            
+
             // Initial fetch
             fetchSettings();
-            
+
             // Handle form submission
             settingsForm.addEventListener('submit', function(event) {
                 event.preventDefault();
@@ -329,7 +337,7 @@
 
                 clearAlerts();
                 showAlert('Saving settings...', 'info');
-                
+
                 // Gather form data from *all* elements (including unchecked checkboxes)
                 const settings = {};
                 Array.from(settingsForm.elements).forEach(element => {
@@ -342,7 +350,7 @@
                         settings[element.name] = element.value;
                     }
                 });
-                
+
                 // Send POST request to update settings
                 fetch('/api/settings', {
                     method: 'POST',
@@ -372,13 +380,13 @@
                     showAlert('An error occurred while updating settings.', 'danger');
                 });
             });
-            
+
             // Function to poll the /api/settings endpoint until it's available again
             function pollSettings() {
                 let retryCount = 0;
                 const maxRetries = 20; // Adjust as needed
                 const retryInterval = 3000; // 3 seconds
-                
+
                 function attemptFetch() {
                     fetch('/api/settings')
                         .then(response => {
@@ -419,7 +427,7 @@
                             setTimeout(attemptFetch, retryInterval);
                         });
                 }
-                
+
                 // Start the first attempt after a short delay
                 setTimeout(attemptFetch, retryInterval);
             }
