@@ -12,206 +12,221 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
   <!-- CryptoJS for SHA-256 Hashing -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-  <style>
-  /* Existing CSS remains unchanged */
-  html,
-  body {
-    /* Fill the full browser height */
-    height: 100%;
-    margin: 0;
-    padding: 0;
-    /* Hide the browser’s main scrollbar so we only see the chat window’s scroll */
-    overflow: hidden;
-  }
+<style>
+/* Existing CSS remains unchanged */
+html,
+body {
+  /* Fill the full browser height */
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* Hide the browser’s main scrollbar so we only see the chat window’s scroll */
+  overflow: hidden;
+}
 
-  body {
-    background-color: #f8f9fa;
-  }
+body {
+  background-color: #f8f9fa;
+}
 
-  /* .chat-container takes up the entire viewport minus horizontal margins/padding */
+/* .chat-container takes up the entire viewport minus horizontal margins/padding */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;              /* Fill vertical space */
+  max-width: 900px;          /* Optional: limit width for desktop */
+  margin: 0 auto;            /* Center horizontally */
+  padding: 20px;             /* Some padding inside */
+  box-sizing: border-box;
+
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+}
+
+/* Sidebar remains at the top, does not grow */
+.sidebar {
+  flex-shrink: 0;
+  margin-bottom: 20px;
+}
+
+/* The main scrolling region for messages */
+.chat-window {
+  flex: 1;           /* Grows to fill remaining space */
+  overflow-y: auto;  /* This is where scrolling happens */
+  border: 1px solid #dee2e6;
+  border-radius: 5px;
+  padding: 10px;
+  background-color: #f1f3f5;
+  margin-bottom: 20px; /* Some spacing before the send form */
+  position: relative;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.message {
+  margin-bottom: 15px;
+  position: relative;
+}
+
+.message .from {
+  font-weight: bold;
+}
+
+.message .timestamp {
+  font-size: 0.8em;
+  color: #6c757d;
+  margin-left: 10px;
+}
+
+/* New CSS for ACK time */
+.message .ack-time {
+  font-size: 0.8em;
+  color: #6c757d;
+  margin-left: 5px;
+}
+
+/* Keep the Send form at the bottom, not flexing vertically */
+.send-form {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.send-form input {
+  flex: 1;
+  margin-right: 10px;
+}
+
+/* Hide additional Bot command buttons by default */
+#botCommands {
+  display: none;
+}
+
+.symbol-img {
+  width: 20px;
+  height: 20px;
+  margin-right: 5px;
+}
+
+/* Example of controlling conversation list and so on... */
+.conversations {
+  list-style: none;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 20px;
+}
+
+.conversations li {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  cursor: pointer;
+  border-radius: 5px;
+  margin-bottom: 5px;
+  background-color: #e9ecef;
+  position: relative;
+}
+
+.conversations li.active {
+  background-color: #0d6efd;
+  color: white;
+}
+
+.unread-count {
+  position: absolute;
+  right: 35px;
+  top: 10px;
+  background-color: red;
+  color: white;
+  border-radius: 50%;
+  padding: 2px 6px;
+  font-size: 0.75em;
+}
+
+.remove-conversation-btn {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  background: transparent;
+  border: none;
+  color: var(--remove-btn-color, #dc3545); /* Bootstrap's red */
+  font-weight: bold;
+  cursor: pointer;
+  font-size: 1em;
+  font-family: Arial, Helvetica, sans-serif; /* Consistent font */
+}
+
+.remove-conversation-btn:hover {
+  color: var(--remove-btn-hover-color, #a71d2a); /* Darker red */
+}
+
+/* Updated CSS for Receipt Indicators */
+.receipt-indicator {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 1.2em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background-color: #dee2e6;
+  transition: background-color 0.3s, color 0.3s;
+  font-family: Arial, Helvetica, sans-serif; /* Consistent font */
+}
+
+/* Define CSS variables for colors */
+:root {
+  --receipt-tick-color: #28a745; /* Bootstrap's green */
+  --receipt-x-color: #dc3545;    /* Bootstrap's red */
+  --remove-btn-color: #dc3545;   /* Bootstrap's red */
+  --remove-btn-hover-color: #a71d2a; /* Darker red on hover */
+}
+
+/* Specific styles for Tick and Cross indicators */
+.receipt-indicator.receipt-tick-circle {
+  color: var(--receipt-tick-color, #28a745);
+}
+
+.receipt-indicator.receipt-x-circle {
+  color: var(--receipt-x-color, #dc3545);
+  cursor: pointer;
+}
+
+/* Spinner remains unchanged */
+.receipt-spinner::after {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border: 2px solid #0d6efd;
+  border-top: 2px solid transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
   .chat-container {
-    display: flex;
-    flex-direction: column;
-    height: 100%;              /* Fill vertical space */
-    max-width: 900px;          /* Optional: limit width for desktop */
-    margin: 0 auto;            /* Center horizontally */
-    padding: 20px;             /* Some padding inside */
-    box-sizing: border-box;
-
-    background: #ffffff;
-    border-radius: 8px;
-    box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+    padding: 10px;
   }
 
-  /* Sidebar remains at the top, does not grow */
   .sidebar {
-    flex-shrink: 0;
-    margin-bottom: 20px;
-  }
-
-  /* The main scrolling region for messages */
-  .chat-window {
-    flex: 1;           /* Grows to fill remaining space */
-    overflow-y: auto;  /* This is where scrolling happens */
-    border: 1px solid #dee2e6;
-    border-radius: 5px;
-    padding: 10px;
-    background-color: #f1f3f5;
-    margin-bottom: 20px; /* Some spacing before the send form */
-    position: relative;
-  }
-
-  .message {
-    margin-bottom: 15px;
-    position: relative;
-  }
-
-  .message .from {
-    font-weight: bold;
-  }
-
-  .message .timestamp {
-    font-size: 0.8em;
-    color: #6c757d;
-    margin-left: 10px;
-  }
-
-  /* New CSS for ACK time */
-  .message .ack-time {
-    font-size: 0.8em;
-    color: #6c757d;
-    margin-left: 5px;
-  }
-
-  /* Keep the Send form at the bottom, not flexing vertically */
-  .send-form {
-    display: flex;
-    flex-shrink: 0;
-  }
-
-  .send-form input {
-    flex: 1;
-    margin-right: 10px;
-  }
-
-  /* Hide additional Bot command buttons by default */
-  #botCommands {
-    display: none;
-  }
-
-  .symbol-img {
-    width: 20px;
-    height: 20px;
-    margin-right: 5px;
-  }
-
-  /* Example of controlling conversation list and so on... */
-  .conversations {
-    list-style: none;
-    padding: 0;
-    max-height: 200px;
-    overflow-y: auto;
-    margin-bottom: 20px;
-  }
-
-  .conversations li {
-    display: flex;
-    align-items: center;
-    padding: 10px;
-    cursor: pointer;
-    border-radius: 5px;
-    margin-bottom: 5px;
-    background-color: #e9ecef;
-    position: relative;
-  }
-
-  .conversations li.active {
-    background-color: #0d6efd;
-    color: white;
-  }
-
-  .unread-count {
-    position: absolute;
-    right: 35px;
-    top: 10px;
-    background-color: red;
-    color: white;
-    border-radius: 50%;
-    padding: 2px 6px;
-    font-size: 0.75em;
+    margin-bottom: 10px;
   }
 
   .remove-conversation-btn {
-    position: absolute;
-    right: 10px;
-    top: 10px;
-    background: transparent;
-    border: none;
-    color: #dc3545;
-    font-weight: bold;
-    cursor: pointer;
-    font-size: 1em;
+    font-size: 0.9em;
   }
-
-  .remove-conversation-btn:hover {
-    color: #a71d2a;
-  }
-
-  .message .receipt-indicator {
-    position: absolute;
-    top: 0;
-    right: 0;
-    font-size: 1.2em;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background-color: #dee2e6;
-    transition: background-color 0.3s, color 0.3s;
-  }
-
-  .receipt-spinner::after {
-    content: '';
-    width: 12px;
-    height: 12px;
-    border: 2px solid #0d6efd;
-    border-top: 2px solid transparent;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  .receipt-tick-circle {
-    color: green;
-  }
-
-  .receipt-x-circle {
-    color: red;
-    cursor: pointer;
-  }
-
-  @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-  }
-
-  /* Responsive adjustments */
-  @media (max-width: 768px) {
-    .chat-container {
-      padding: 10px;
-    }
-
-    .sidebar {
-      margin-bottom: 10px;
-    }
-
-    .remove-conversation-btn {
-      font-size: 0.9em;
-    }
-  }
-
-  </style>
+}
+</style>
 </head>
 <body>
 
@@ -235,7 +250,7 @@
       <h5>Conversations</h5>
       <ul class="conversations" id="conversationsList"></ul>
       <div class="d-flex gap-2 align-items-center">
-        <button class="btn btn-secondary btn-sm" id="addConversationBtn">Add Conversation</button>
+        <button class="btn btn-info btn-sm" id="addConversationBtn">Add Conversation</button>
         <button class="btn btn-warning btn-sm" id="botBtn">Bot</button>
         <button class="btn btn-danger btn-sm" id="clearConversationBtn">Clear</button>
       </div>
@@ -594,69 +609,69 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Append Message to Chat Window
-  function appendMessage(from, text, timestamp, receiptId = null, receiptReceived = false, receiptFailed = false, rawPacket = null) {
-    let displayText = receiptEnabled
-      ? text.replace(/\{[A-Z0-9]{1,5}$/, '').trim()
-      : text.trim();
+function appendMessage(from, text, timestamp, receiptId = null, receiptReceived = false, receiptFailed = false, rawPacket = null) {
+  let displayText = receiptEnabled
+    ? text.replace(/\{[A-Z0-9]{1,5}$/, '').trim()
+    : text.trim();
 
-    if (receiptEnabled && /^ack[A-Z0-9]{1,5}$/.test(displayText)) return; 
+  if (receiptEnabled && /^ack[A-Z0-9]{1,5}$/.test(displayText)) return;
 
-    const messageDiv = document.createElement('div');
-    messageDiv.classList.add('message');
-    if (receiptId) {
-      messageDiv.setAttribute('data-receipt-id', receiptId);
-    }
-
-    const header = document.createElement('div');
-    const fromSpan = document.createElement('span');
-    fromSpan.classList.add('from');
-    fromSpan.textContent = from;
-
-    const timestampSpan = document.createElement('span');
-    timestampSpan.classList.add('timestamp');
-    timestampSpan.textContent = ` [${new Date(timestamp).toLocaleString()}]`;
-
-    header.appendChild(fromSpan);
-    header.appendChild(timestampSpan);
-
-    const textP = document.createElement('p');
-    textP.classList.add('mb-0');
-    textP.textContent = displayText;
-
-    if (from === 'You' && receiptId) {
-      if (receiptReceived) {
-        const tickSpan = document.createElement('span');
-        tickSpan.classList.add('receipt-indicator', 'receipt-tick-circle');
-        tickSpan.textContent = '✔';
-        textP.appendChild(tickSpan);
-      }
-      else if (receiptFailed) {
-        const failSpan = document.createElement('span');
-        failSpan.classList.add('receipt-indicator', 'receipt-x-circle');
-        failSpan.textContent = '✖';
-        failSpan.title = 'Click to resend';
-        failSpan.addEventListener('click', () => {
-          resendFailedMessageLocal(receiptId);
-        });
-        textP.appendChild(failSpan);
-      }
-      else {
-        const indicatorSpan = document.createElement('span');
-        indicatorSpan.classList.add('receipt-indicator', 'receipt-circle', 'receipt-spinner');
-        textP.appendChild(indicatorSpan);
-        // Only set up retry logic if rawPacket is present (i.e., message sent in current session)
-        if (rawPacket) {
-          // Removed messageRetryMap.set(...) and setupReceiptTimeout(...) from appendMessage
-          // These are now handled exclusively in sendDirectMessage
-        }
-      }
-    }
-
-    messageDiv.appendChild(header);
-    messageDiv.appendChild(textP);
-    chatWindow.appendChild(messageDiv);
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+  const messageDiv = document.createElement('div');
+  messageDiv.classList.add('message');
+  if (receiptId) {
+    messageDiv.setAttribute('data-receipt-id', receiptId);
   }
+
+  const header = document.createElement('div');
+  const fromSpan = document.createElement('span');
+  fromSpan.classList.add('from');
+  fromSpan.textContent = from;
+
+  const timestampSpan = document.createElement('span');
+  timestampSpan.classList.add('timestamp');
+  timestampSpan.textContent = ` [${new Date(timestamp).toLocaleString()}]`;
+
+  header.appendChild(fromSpan);
+  header.appendChild(timestampSpan);
+
+  const textP = document.createElement('p');
+  textP.classList.add('mb-0');
+  textP.textContent = displayText;
+
+  // Create the receipt indicator span
+  if (from === 'You' && receiptId) {
+    let indicatorSpan;
+    if (receiptReceived) {
+      indicatorSpan = document.createElement('span');
+      indicatorSpan.classList.add('receipt-indicator', 'receipt-tick-circle');
+      indicatorSpan.textContent = '✔';
+    }
+    else if (receiptFailed) {
+      indicatorSpan = document.createElement('span');
+      indicatorSpan.classList.add('receipt-indicator', 'receipt-x-circle');
+      indicatorSpan.textContent = '✖';
+      indicatorSpan.title = 'Click to resend';
+      indicatorSpan.addEventListener('click', () => {
+        resendFailedMessageLocal(receiptId);
+      });
+    }
+    else {
+      indicatorSpan = document.createElement('span');
+      indicatorSpan.classList.add('receipt-indicator', 'receipt-circle', 'receipt-spinner');
+    }
+
+    if (indicatorSpan) {
+      // Append the indicator directly to the messageDiv
+      messageDiv.appendChild(indicatorSpan);
+    }
+  }
+
+  messageDiv.appendChild(header);
+  messageDiv.appendChild(textP);
+  chatWindow.appendChild(messageDiv);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
 
   // Send Receipt Function
   function sendReceipt(receiptId, sender) {
@@ -802,29 +817,45 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Mark Message as Failed Across All Conversations
-  function markMessageAsFailed(receiptId) {
-    if (!currentUserCallsign) return;
-    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
+function markMessageAsFailed(receiptId) {
+  if (!currentUserCallsign) return;
 
+  // First, check if we have a messageRetryMap entry for this receipt ID
+  const messageInfo = messageRetryMap.get(receiptId);
+
+  // If this is a "test" message, handle the button directly
+  if (messageInfo && messageInfo.isTest) {
+    if (messageInfo.button) {
+      // Turn the Test button red and enable it again
+      messageInfo.button.classList.remove('btn-info', 'btn-success');
+      messageInfo.button.classList.add('btn-danger');
+      messageInfo.button.textContent = 'Test ✖';
+      messageInfo.button.disabled = false;
+    }
+  } else {
+    // Otherwise, mark a normal message as failed in localStorage
+    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
     conversations.forEach(recipient => {
       const messagesKey = `messages_${currentUserCallsign}_${recipient}`;
       let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
       const idx = messages.findIndex(msg => msg.receiptId === receiptId && !msg.receiptReceived);
       if (idx !== -1) {
+        // Mark as failed
         messages[idx].receiptFailed = true;
         localStorage.setItem(messagesKey, JSON.stringify(messages));
         console.log(`LocalStorage updated: message ${receiptId} => receiptFailed=true in conversation ${recipient}`);
 
-        // If the conversation is currently active, update the UI
+        // If the conversation is currently active, update the UI indicator
         if (recipient === currentConversation) {
           const msgDiv = chatWindow.querySelector(`[data-receipt-id="${receiptId}"]`);
           if (msgDiv) {
             const rSpan = msgDiv.querySelector('.receipt-indicator');
             if (rSpan) {
-              rSpan.classList.remove('receipt-circle','receipt-spinner');
+              rSpan.classList.remove('receipt-circle', 'receipt-spinner');
               rSpan.classList.add('receipt-x-circle');
               rSpan.textContent = '✖';
               rSpan.title = 'Click to resend';
+              // Hook up manual resend on the red “X”
               rSpan.addEventListener('click', () => {
                 resendFailedMessageLocal(receiptId);
               }, { once: true });
@@ -834,6 +865,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  // Finally, remove from retry map and add to displayedReceiptIds to prevent further processing
+  messageRetryMap.delete(receiptId);
+  displayedReceiptIds.add(receiptId);
+  console.log(`Removed receipt ID ${receiptId} from messageRetryMap after marking as failed.`);
+}
+
 
   // Compute Hash for Duplicate Detection
   function computeHash(idString, text) {

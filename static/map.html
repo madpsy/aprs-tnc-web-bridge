@@ -514,7 +514,7 @@
     <!-- New Statistics Section -->
     <div id="statistics">
         <div class="stat-item" id="stat-num-stations">Stations: 0</div>
-        <div class="stat-item" id="stat-last-marker">Added: N/A</div>
+        <div class="stat-item" id="stat-last-marker">Latest: N/A</div>
         <div class="stat-item" id="stat-last-packet">Last Pkt: N/A</div>
         <div class="stat-item" id="stat-avg-packet-time">Pkt Avg: N/A</div>
     </div>
@@ -766,10 +766,12 @@
             // Check if it's a new station
             var isNewStation = !markers[station] || !markers[station].marker;
             if (isNewStation) {
+	      if (station) {
                 lastAddedMarker = {
                     callsign: station,
                     timestamp: packetDate
                 };
+               }
             }
 
             // Existing APRS packet handling logic...
@@ -885,31 +887,33 @@
         }
 
         // Function to update statistics in the DOM
-        function updateStatistics() {
-            // 1. Number of Stations
-            var numStations = Object.keys(markers).length;
-            statNumStations.textContent = "Stations: " + numStations;
+// Function to update statistics in the DOM
+function updateStatistics() {
+    // 1. Number of Stations - Updated to count only active markers
+    var numStations = Object.values(markers).filter(m => m.marker).length;
+    statNumStations.textContent = "Stations: " + numStations;
 
-            // 2. Last Added Marker
-            if (lastAddedMarker) {
-                var timeAgo = formatTimeAgo(lastAddedMarker.timestamp);
-                statLastMarker.textContent = "Added: " + lastAddedMarker.callsign + " (" + timeAgo + " ago)";
-            } else {
-                statLastMarker.textContent = "Added: N/A";
-            }
+    // 2. Last Added Marker - Updated to reflect the most recent packet
+    if (lastAddedMarker) {
+        var timeAgo = formatTimeAgo(lastAddedMarker.timestamp);
+        statLastMarker.textContent = "Latest: " + lastAddedMarker.callsign + " (" + timeAgo + " ago)";
+    } else {
+        statLastMarker.textContent = "Latest: N/A";
+    }
 
-            // 3. Time Since Last Packet Received
-            if (lastPacketTimestamp) {
-                var timeSinceLast = formatTimeAgo(lastPacketTimestamp);
-                statLastPacket.textContent = "Last Pkt: " + timeSinceLast + " ago";
-            } else {
-                statLastPacket.textContent = "Last Pkt: N/A";
-            }
+    // 3. Time Since Last Packet Received
+    if (lastPacketTimestamp) {
+        var timeSinceLast = formatTimeAgo(lastPacketTimestamp);
+        statLastPacket.textContent = "Last Pkt: " + timeSinceLast + " ago";
+    } else {
+        statLastPacket.textContent = "Last Pkt: N/A";
+    }
 
-            // 4. Average Time Between Packets Received
-            var avgTime = calculateAveragePacketTime();
-            statAvgPacketTime.textContent = "Pkt Avg: " + avgTime;
-        }
+    // 4. Average Time Between Packets Received
+    var avgTime = calculateAveragePacketTime();
+    statAvgPacketTime.textContent = "Pkt Avg: " + avgTime;
+}
+
 
         // Initialize statistics
         updateStatistics();
