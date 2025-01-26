@@ -4,7 +4,7 @@ Thanks for checking out this attempt of a modern looking browser based APRS clie
 
 The idea is you run the Python application on a computer which has a connection to a KISS TNC, the built in web server is then available to any browser/client on the network.
 
-More docs to come. See the INSTALL file to get going and then once running open http://127.0.0.1:5001/ for the main interface and http://127.0.0.1:5001/static/readme.html for documentation. Configuration is done by editing settings.yaml or the use the web frontend http://127.0.0.1:5001/static/settings.html
+More docs to come. See the INSTALL file to get going and then once running open http://127.0.0.1:5001/ for the main interface and http://127.0.0.1:5001/static/readme.html for documentation. Configuration can be edited via a frontend at http://127.0.0.1:5001/static/settings.html (these are stored in settings.yaml).
 
 Currently designed for a good sized screen (PC/laptop etc) rather than a phone as there are already apps for that. Note: This is very much early stages and not all packets are decoded or utilised.
 
