@@ -80,11 +80,23 @@ HTML_PAGE = """
 <html>
 <head>
     <title>APRS TNC</title>
+    <script>
+        function initializeFrames() {
+            fetch('/api/settings')
+                .then(response => response.json())
+                .then(data => {
+                    const cs = data.my_callsign;
+                    if (cs) {
+                        const param = `?callsign=${encodeURIComponent(cs)}`;
+                        document.getElementsByName('leftFrame')[0].src += param;
+                        document.getElementsByName('rightFrame')[0].src += param;
+                    }
+                });
+        }
+    </script>
 </head>
-<frameset cols="70%,*" frameborder="1" border="2" framespacing="2">
-    <!-- Left frame with map.html -->
+<frameset cols="70%,*" onload="initializeFrames()">
     <frame src="/static/map.html" name="leftFrame">
-    <!-- Right frame with messages.html -->
     <frame src="/static/messages.html" name="rightFrame">
 </frameset>
 </html>
