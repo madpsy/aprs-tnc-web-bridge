@@ -1,4 +1,4 @@
-# aprs-tnc-web-bridge
+# KISS TNC to Web Interface APRS Client & MQTT Telemetry Manager
 
 Thanks for checking out this attempt of a modern looking browser based APRS client (though is actually much more than that). It is very much a first attempt and MRs are very much welcomed! You can build your own frontends on top of its websocket server and APIs.
 
