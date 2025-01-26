@@ -10,7 +10,7 @@ Currently designed for a good sized screen (PC/laptop etc) rather than a phone a
 
 At a very basic level this sends raw and decoded APRS packets over websockets as JSON and receives raw packets and formatted location/message types over a JSON based API.
 
-Essentially it is a KISS TNC (Serial/TCP) -> Web interface via websockets & JSON API. MQTT support for APRS analogue and digital telemetry channels as well as the usual mapping and messaging features are included.
+It provides a KISS TNC (Serial/TCP) -> Web interface. MQTT support for APRS analogue and digital telemetry channels as well as the usual mapping and messaging features are included.
 
 TNCs which have been tested include CA2RXU's LoRa iGate and Tracker firmware, NinoTNC and the VGC VR-N76 HT.
 
