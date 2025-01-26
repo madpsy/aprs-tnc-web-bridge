@@ -15,6 +15,7 @@ mqtt_pass: ''
 mqtt_port: 1883
 mqtt_tls: false
 mqtt_user: ''
+my_callsign: ''
 no_log: false
 port: 1234
 proxy_enabled: false
