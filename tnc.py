@@ -95,7 +95,7 @@ HTML_PAGE = """
         }
     </script>
 </head>
-<frameset cols="70%,*" onload="initializeFrames()">
+<frameset cols="65%,*" onload="initializeFrames()">
     <frame src="/static/map.html" name="leftFrame">
     <frame src="/static/messages.html" name="rightFrame">
 </frameset>
