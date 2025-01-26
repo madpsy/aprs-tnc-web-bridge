@@ -620,121 +620,143 @@
         var storedMarkers = JSON.parse(localStorage.getItem('markers') || '{}');
 
         // Function to load saved data on page load
-        function loadSavedData() {
-            // Populate input fields from localStorage
-            var callsign = localStorage.getItem('callsign');
-            if (callsign) document.getElementById('callsign-input').value = callsign;
-
-            var comment = localStorage.getItem('comment');
-            if (comment) document.getElementById('comment-input').value = comment;
-
-            var status = localStorage.getItem('status');
-            if (status) document.getElementById('status-input').value = status;
-
-            var symbol = localStorage.getItem('symbol');
-            if (symbol) {
-                document.getElementById('symbol-input').value = symbol;
-                var symbolUrl = 'https://lora-aprs.live/api/symbol?symbol=' + encodeURIComponent(symbol);
-                document.getElementById('symbol-preview-img').src = symbolUrl;
-                document.getElementById('symbol-preview-img').style.display = 'inline';
-            } else {
-                document.getElementById('symbol-preview-img').style.display = 'none';
-            }
-
-            // Populate JSON history from localStorage
-            var jsonHistory = JSON.parse(localStorage.getItem('jsonHistory') || '[]');
-            jsonHistory.slice(-250).forEach(function(entry) {
-                var entryDiv = document.createElement('div');
-                entryDiv.className = 'json-entry';
-
-                var localTimeStr = formatLocalTime(entry.timestamp);
-                var timestampEl = document.createElement('div');
-                timestampEl.className = 'timestamp';
-                timestampEl.textContent = `Received at: ${localTimeStr}`;
-
-                var preEl = document.createElement('pre');
-                preEl.textContent = JSON.stringify(entry.data, null, 2);
-
-                entryDiv.appendChild(timestampEl);
-                entryDiv.appendChild(preEl);
-
-                // Insert at top
-                if (jsonEntries.firstChild) {
-                    jsonEntries.insertBefore(entryDiv, jsonEntries.firstChild);
-                } else {
-                    jsonEntries.appendChild(entryDiv);
-                }
-            });
-            if (jsonHistory.length > 0 && !jsonBoxClosedManually) {
-                jsonBox.style.display = 'block';
-            }
-
-            // Populate markers from localStorage
-            var allLoadedLatLngs = []; // To store all marker positions
-            for (var station in storedMarkers) {
-                if (storedMarkers.hasOwnProperty(station)) {
-                    var data = storedMarkers[station];
-                    var customIcon = L.icon({
-                        iconUrl: `https://lora-aprs.live/api/symbol?symbol=${encodeURIComponent(data.symbol_table + data.symbol)}`,
-                        iconSize: [40, 40],
-                        iconAnchor: [20, 20],
-                        popupAnchor: [0, -20]
-                    });
-                    var marker = L.marker([data.latitude, data.longitude], {icon: customIcon}).addTo(map);
-                    marker.bindTooltip(station, {
-                        permanent: true,
-                        direction: "bottom",
-                        offset: [0, 10],
-                        className: "station-label"
-                    });
-                    markers[station] = {
-                        marker: marker,
-                        path: data.path ? data.path.map(pt => L.latLng(pt.lat, pt.lng)) : [],
-                        polyline: null,
-                        timestamp: data.timestamp,
-                        dots: [],
-                        to: data.to || "",
-                        pathInfo: data.pathInfo || [],
-                        comment: data.comment || "",
-                        status: data.status || "",
-                        rawPackets: [] // Raw packets cannot be restored
-                    };
-                    allLoadedLatLngs.push([data.latitude, data.longitude]); // Collect main marker position
-
-                    if (showPathsCheckbox.checked && markers[station].path.length > 0) {
-                        var polyline = L.polyline(markers[station].path, {
-                            color: getColorForStation(station),
-                            weight: 5
-                        }).addTo(map);
-                        markers[station].polyline = polyline;
-                        // Recreate dots and add their positions
-                        markers[station].dots = markers[station].path.map(pt => L.circleMarker(pt, {
-                            radius: 5,
-                            color: getColorForStation(station),
-                            fillColor: getColorForStation(station),
-                            fillOpacity: 1,
-                            weight: 0
-                        }).addTo(map));
-                        
-                        // Add each path point to allLoadedLatLngs
-                        markers[station].path.forEach(pt => {
-                            allLoadedLatLngs.push([pt.lat, pt.lng]);
-                        });
-                    }
-                    rebuildPopup(station);
-                }
-            }
-
-            // After loading all markers, perform fitBounds if applicable
-            if (allLoadedLatLngs.length > 0 && autoZoomCheckbox.checked) {
-                if (allLoadedLatLngs.length === 1) {
-                    map.setView(allLoadedLatLngs[0], 13); // Set to a reasonable zoom level
-                } else {
-                    var bounds = L.latLngBounds(allLoadedLatLngs);
-                    map.fitBounds(bounds, { padding: [50, 50] }); // Add padding as needed
-                }
-            }
+function loadSavedData() {
+    // Function to parse query parameters using URLSearchParams (modern browsers)
+    function getQueryParams() {
+        var params = {};
+        var searchParams = new URLSearchParams(window.location.search);
+        for (let [key, value] of searchParams.entries()) {
+            params[key.toLowerCase()] = value;
         }
+        return params;
+    }
+
+    var queryParams = getQueryParams();
+
+    // Populate input fields from localStorage or URL query parameters
+    var callsign = localStorage.getItem('callsign');
+    if (callsign) {
+        document.getElementById('callsign-input').value = callsign;
+    } else if (queryParams['callsign'] && queryParams['callsign'].trim() !== "") {
+        // If no callsign in localStorage, check URL query parameter
+        var urlCallsign = queryParams['callsign'].trim().toUpperCase();
+        document.getElementById('callsign-input').value = urlCallsign;
+
+        // Optionally, store the callsign from URL to localStorage for persistence
+        localStorage.setItem('callsign', urlCallsign);
+    }
+
+    var comment = localStorage.getItem('comment');
+    if (comment) document.getElementById('comment-input').value = comment;
+
+    var status = localStorage.getItem('status');
+    if (status) document.getElementById('status-input').value = status;
+
+    var symbol = localStorage.getItem('symbol');
+    if (symbol) {
+        document.getElementById('symbol-input').value = symbol;
+        var symbolUrl = 'https://lora-aprs.live/api/symbol?symbol=' + encodeURIComponent(symbol);
+        document.getElementById('symbol-preview-img').src = symbolUrl;
+        document.getElementById('symbol-preview-img').style.display = 'inline';
+    } else {
+        document.getElementById('symbol-preview-img').style.display = 'none';
+    }
+
+    // Populate JSON history from localStorage
+    var jsonHistory = JSON.parse(localStorage.getItem('jsonHistory') || '[]');
+    jsonHistory.slice(-250).forEach(function(entry) {
+        var entryDiv = document.createElement('div');
+        entryDiv.className = 'json-entry';
+
+        var localTimeStr = formatLocalTime(entry.timestamp);
+        var timestampEl = document.createElement('div');
+        timestampEl.className = 'timestamp';
+        timestampEl.textContent = `Received at: ${localTimeStr}`;
+
+        var preEl = document.createElement('pre');
+        preEl.textContent = JSON.stringify(entry.data, null, 2);
+
+        entryDiv.appendChild(timestampEl);
+        entryDiv.appendChild(preEl);
+
+        // Insert at top
+        if (jsonEntries.firstChild) {
+            jsonEntries.insertBefore(entryDiv, jsonEntries.firstChild);
+        } else {
+            jsonEntries.appendChild(entryDiv);
+        }
+    });
+    if (jsonHistory.length > 0 && !jsonBoxClosedManually) {
+        jsonBox.style.display = 'block';
+    }
+
+    // Populate markers from localStorage
+    var allLoadedLatLngs = []; // To store all marker positions
+    for (var station in storedMarkers) {
+        if (storedMarkers.hasOwnProperty(station)) {
+            var data = storedMarkers[station];
+            var customIcon = L.icon({
+                iconUrl: `https://lora-aprs.live/api/symbol?symbol=${encodeURIComponent(data.symbol_table + data.symbol)}`,
+                iconSize: [40, 40],
+                iconAnchor: [20, 20],
+                popupAnchor: [0, -20]
+            });
+            var marker = L.marker([data.latitude, data.longitude], {icon: customIcon}).addTo(map);
+            marker.bindTooltip(station, {
+                permanent: true,
+                direction: "bottom",
+                offset: [0, 10],
+                className: "station-label"
+            });
+            markers[station] = {
+                marker: marker,
+                path: data.path ? data.path.map(pt => L.latLng(pt.lat, pt.lng)) : [],
+                polyline: null,
+                timestamp: data.timestamp,
+                dots: [],
+                to: data.to || "",
+                pathInfo: data.pathInfo || [],
+                comment: data.comment || "",
+                status: data.status || "",
+                rawPackets: [] // Raw packets cannot be restored
+            };
+            allLoadedLatLngs.push([data.latitude, data.longitude]); // Collect main marker position
+
+            if (showPathsCheckbox.checked && markers[station].path.length > 0) {
+                var polyline = L.polyline(markers[station].path, {
+                    color: getColorForStation(station),
+                    weight: 5
+                }).addTo(map);
+                markers[station].polyline = polyline;
+                // Recreate dots and add their positions
+                markers[station].dots = markers[station].path.map(pt => L.circleMarker(pt, {
+                    radius: 5,
+                    color: getColorForStation(station),
+                    fillColor: getColorForStation(station),
+                    fillOpacity: 1,
+                    weight: 0
+                }).addTo(map));
+
+                // Add each path point to allLoadedLatLngs
+                markers[station].path.forEach(pt => {
+                    allLoadedLatLngs.push([pt.lat, pt.lng]);
+                });
+            }
+            rebuildPopup(station);
+        }
+    }
+
+    // After loading all markers, perform fitBounds if applicable
+    if (allLoadedLatLngs.length > 0 && autoZoomCheckbox.checked) {
+        if (allLoadedLatLngs.length === 1) {
+            map.setView(allLoadedLatLngs[0], 13); // Set to a reasonable zoom level
+        } else {
+            var bounds = L.latLngBounds(allLoadedLatLngs);
+            map.fitBounds(bounds, { padding: [50, 50] }); // Add padding as needed
+        }
+    }
+}
+
 
         // Call loadSavedData after the script is loaded
         loadSavedData();

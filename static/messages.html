@@ -5,8 +5,8 @@
   <title>APRS Messages</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Bootstrap CSS -->
-  <link 
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" 
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
     rel="stylesheet">
   <!-- Socket.IO -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
@@ -323,7 +323,7 @@ body {
   </div>
 </div>
 
-<script 
+<script
   src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
@@ -425,14 +425,37 @@ document.addEventListener('DOMContentLoaded', () => {
   // User and Conversation Data
   let userCallsigns = JSON.parse(localStorage.getItem('userCallsigns')) || [];
   const savedLastCallsign = localStorage.getItem('lastSelectedCallsign');
-  let currentUserCallsign = (savedLastCallsign && userCallsigns.includes(savedLastCallsign)) ? savedLastCallsign : (userCallsigns.length ? userCallsigns[0] : null);
+
+  /* ===========================
+     MINIMAL CHANGE BELOW
+     If no callsigns are stored, try the 'callsign' query param
+  ============================ */
+  if (userCallsigns.length === 0) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const callsignParam = urlParams.get('callsign');
+    if (callsignParam) {
+      const newCallsign = callsignParam.trim().toUpperCase();
+      const callsignPattern = /^[A-Z0-9-]{3,15}$/;
+      if (callsignPattern.test(newCallsign)) {
+        userCallsigns.push(newCallsign);
+        localStorage.setItem('userCallsigns', JSON.stringify(userCallsigns));
+        localStorage.setItem('lastSelectedCallsign', newCallsign);
+      }
+    }
+  }
+  /* END MINIMAL CHANGE */
+
+  let currentUserCallsign = (savedLastCallsign && userCallsigns.includes(savedLastCallsign))
+    ? savedLastCallsign
+    : (userCallsigns.length ? userCallsigns[0] : null);
+
   let currentConversation = null;
   let receiptEnabled = true;
 
   // Retry and Receipt Maps
   const messageRetryMap = new Map();
   const processedReceiptMap = new Map();
-  const displayedReceiptIds = new Set(); 
+  const displayedReceiptIds = new Set();
   let unreadCounts = JSON.parse(localStorage.getItem('unreadCounts')) || {};
   let isLoadingMessages = false;
 
@@ -538,7 +561,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const removeBtn = document.createElement('button');
       removeBtn.classList.add('remove-conversation-btn');
       removeBtn.textContent = '✖';
-      removeBtn.title = 'Remove Conversation';
+      removeBtn.title = `Remove Conversation`;
       removeBtn.setAttribute('aria-label', `Remove conversation with ${callsignDisplayName(recipient)}`);
       li.appendChild(removeBtn);
 
@@ -609,69 +632,68 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Append Message to Chat Window
-function appendMessage(from, text, timestamp, receiptId = null, receiptReceived = false, receiptFailed = false, rawPacket = null) {
-  let displayText = receiptEnabled
-    ? text.replace(/\{[A-Z0-9]{1,5}$/, '').trim()
-    : text.trim();
+  function appendMessage(from, text, timestamp, receiptId = null, receiptReceived = false, receiptFailed = false, rawPacket = null) {
+    let displayText = receiptEnabled
+      ? text.replace(/\{[A-Z0-9]{1,5}$/, '').trim()
+      : text.trim();
 
-  if (receiptEnabled && /^ack[A-Z0-9]{1,5}$/.test(displayText)) return;
+    if (receiptEnabled && /^ack[A-Z0-9]{1,5}$/.test(displayText)) return;
 
-  const messageDiv = document.createElement('div');
-  messageDiv.classList.add('message');
-  if (receiptId) {
-    messageDiv.setAttribute('data-receipt-id', receiptId);
+    const messageDiv = document.createElement('div');
+    messageDiv.classList.add('message');
+    if (receiptId) {
+      messageDiv.setAttribute('data-receipt-id', receiptId);
+    }
+
+    const header = document.createElement('div');
+    const fromSpan = document.createElement('span');
+    fromSpan.classList.add('from');
+    fromSpan.textContent = from;
+
+    const timestampSpan = document.createElement('span');
+    timestampSpan.classList.add('timestamp');
+    timestampSpan.textContent = `[${new Date(timestamp).toLocaleString()}]`;
+
+    header.appendChild(fromSpan);
+    header.appendChild(timestampSpan);
+
+    const textP = document.createElement('p');
+    textP.classList.add('mb-0');
+    textP.textContent = displayText;
+
+    // Create the receipt indicator span
+    if (from === 'You' && receiptId) {
+      let indicatorSpan;
+      if (receiptReceived) {
+        indicatorSpan = document.createElement('span');
+        indicatorSpan.classList.add('receipt-indicator', 'receipt-tick-circle');
+        indicatorSpan.textContent = '✔';
+      }
+      else if (receiptFailed) {
+        indicatorSpan = document.createElement('span');
+        indicatorSpan.classList.add('receipt-indicator', 'receipt-x-circle');
+        indicatorSpan.textContent = '✖';
+        indicatorSpan.title = 'Click to resend';
+        indicatorSpan.addEventListener('click', () => {
+          resendFailedMessageLocal(receiptId);
+        });
+      }
+      else {
+        indicatorSpan = document.createElement('span');
+        indicatorSpan.classList.add('receipt-indicator', 'receipt-circle', 'receipt-spinner');
+      }
+
+      if (indicatorSpan) {
+        // Append the indicator directly to the messageDiv
+        messageDiv.appendChild(indicatorSpan);
+      }
+    }
+
+    messageDiv.appendChild(header);
+    messageDiv.appendChild(textP);
+    chatWindow.appendChild(messageDiv);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
   }
-
-  const header = document.createElement('div');
-  const fromSpan = document.createElement('span');
-  fromSpan.classList.add('from');
-  fromSpan.textContent = from;
-
-  const timestampSpan = document.createElement('span');
-  timestampSpan.classList.add('timestamp');
-  timestampSpan.textContent = ` [${new Date(timestamp).toLocaleString()}]`;
-
-  header.appendChild(fromSpan);
-  header.appendChild(timestampSpan);
-
-  const textP = document.createElement('p');
-  textP.classList.add('mb-0');
-  textP.textContent = displayText;
-
-  // Create the receipt indicator span
-  if (from === 'You' && receiptId) {
-    let indicatorSpan;
-    if (receiptReceived) {
-      indicatorSpan = document.createElement('span');
-      indicatorSpan.classList.add('receipt-indicator', 'receipt-tick-circle');
-      indicatorSpan.textContent = '✔';
-    }
-    else if (receiptFailed) {
-      indicatorSpan = document.createElement('span');
-      indicatorSpan.classList.add('receipt-indicator', 'receipt-x-circle');
-      indicatorSpan.textContent = '✖';
-      indicatorSpan.title = 'Click to resend';
-      indicatorSpan.addEventListener('click', () => {
-        resendFailedMessageLocal(receiptId);
-      });
-    }
-    else {
-      indicatorSpan = document.createElement('span');
-      indicatorSpan.classList.add('receipt-indicator', 'receipt-circle', 'receipt-spinner');
-    }
-
-    if (indicatorSpan) {
-      // Append the indicator directly to the messageDiv
-      messageDiv.appendChild(indicatorSpan);
-    }
-  }
-
-  messageDiv.appendChild(header);
-  messageDiv.appendChild(textP);
-  chatWindow.appendChild(messageDiv);
-  chatWindow.scrollTop = chatWindow.scrollHeight;
-}
-
 
   // Send Receipt Function
   function sendReceipt(receiptId, sender) {
@@ -698,10 +720,10 @@ function appendMessage(from, text, timestamp, receiptId = null, receiptReceived 
   function handleReceipt(receiptId) {
     receiptId = receiptId.trim().toUpperCase();
     console.log(`Processing receipt for ID: ${receiptId}`);
-    
+
     if (messageRetryMap.has(receiptId)) {
       const messageInfo = messageRetryMap.get(receiptId);
-      
+
       if (!messageInfo.isTest) {
         if (messageInfo.tickSpan) {
           messageInfo.tickSpan.classList.remove('receipt-circle', 'receipt-spinner');
@@ -713,22 +735,22 @@ function appendMessage(from, text, timestamp, receiptId = null, receiptReceived 
           messageInfo.button.classList.remove('btn-info');
           messageInfo.button.classList.add('btn-success');
           messageInfo.button.textContent = 'Test ✔';
-          messageInfo.button.disabled = false; 
+          messageInfo.button.disabled = false;
         }
       }
-      
+
       if (messageInfo.timeoutId) {
         clearTimeout(messageInfo.timeoutId);
         console.log(`Cleared timeout for receipt ID: ${receiptId}`);
       }
-      
+
       messageRetryMap.delete(receiptId);
       displayedReceiptIds.add(receiptId);
       console.log(`Removed receipt ID: ${receiptId} from messageRetryMap`);
     }
 
     markMessageAsReceived(receiptId);
-    
+
     // Add [RTT: Xs] with time difference
     const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
     let messageTimestamp = null;
@@ -749,17 +771,17 @@ function appendMessage(from, text, timestamp, receiptId = null, receiptReceived 
         return;
       }
       console.log(`Parsed Sent Time: ${sentTime}`);
-      
+
       const ackTime = new Date();
       console.log(`Acknowledgment Time: ${ackTime}`);
-      
+
       const diffMilliseconds = ackTime - sentTime;
       console.log(`Difference in Milliseconds: ${diffMilliseconds}`);
-      
+
       const diffSeconds = Math.floor(diffMilliseconds / 1000);
       const diffDisplay = diffSeconds >=1 ? diffSeconds : 0;
       console.log(`RTT Calculated: ${diffDisplay}s`);
-      
+
       const msgDiv = chatWindow.querySelector(`[data-receipt-id="${receiptId}"]`);
       if (msgDiv) {
         const timestampSpan = msgDiv.querySelector('.timestamp');
@@ -768,7 +790,7 @@ function appendMessage(from, text, timestamp, receiptId = null, receiptReceived 
           if (!msgDiv.querySelector('.ack-time')) {
             const ackSpan = document.createElement('span');
             ackSpan.classList.add('ack-time');
-            ackSpan.textContent = ` [RTT: ${diffDisplay}s]`;
+            ackSpan.textContent = `[RTT: ${diffDisplay}s]`;
             timestampSpan.parentNode.insertBefore(ackSpan, timestampSpan.nextSibling);
           }
         }
@@ -817,61 +839,60 @@ function appendMessage(from, text, timestamp, receiptId = null, receiptReceived 
   }
 
   // Mark Message as Failed Across All Conversations
-function markMessageAsFailed(receiptId) {
-  if (!currentUserCallsign) return;
+  function markMessageAsFailed(receiptId) {
+    if (!currentUserCallsign) return;
 
-  // First, check if we have a messageRetryMap entry for this receipt ID
-  const messageInfo = messageRetryMap.get(receiptId);
+    // First, check if we have a messageRetryMap entry for this receipt ID
+    const messageInfo = messageRetryMap.get(receiptId);
 
-  // If this is a "test" message, handle the button directly
-  if (messageInfo && messageInfo.isTest) {
-    if (messageInfo.button) {
-      // Turn the Test button red and enable it again
-      messageInfo.button.classList.remove('btn-info', 'btn-success');
-      messageInfo.button.classList.add('btn-danger');
-      messageInfo.button.textContent = 'Test ✖';
-      messageInfo.button.disabled = false;
-    }
-  } else {
-    // Otherwise, mark a normal message as failed in localStorage
-    const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
-    conversations.forEach(recipient => {
-      const messagesKey = `messages_${currentUserCallsign}_${recipient}`;
-      let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
-      const idx = messages.findIndex(msg => msg.receiptId === receiptId && !msg.receiptReceived);
-      if (idx !== -1) {
-        // Mark as failed
-        messages[idx].receiptFailed = true;
-        localStorage.setItem(messagesKey, JSON.stringify(messages));
-        console.log(`LocalStorage updated: message ${receiptId} => receiptFailed=true in conversation ${recipient}`);
+    // If this is a "test" message, handle the button directly
+    if (messageInfo && messageInfo.isTest) {
+      if (messageInfo.button) {
+        // Turn the Test button red and enable it again
+        messageInfo.button.classList.remove('btn-info', 'btn-success');
+        messageInfo.button.classList.add('btn-danger');
+        messageInfo.button.textContent = 'Test ✖';
+        messageInfo.button.disabled = false;
+      }
+    } else {
+      // Otherwise, mark a normal message as failed in localStorage
+      const conversations = JSON.parse(localStorage.getItem(`conversations_${currentUserCallsign}`)) || [];
+      conversations.forEach(recipient => {
+        const messagesKey = `messages_${currentUserCallsign}_${recipient}`;
+        let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
+        const idx = messages.findIndex(msg => msg.receiptId === receiptId && !msg.receiptReceived);
+        if (idx !== -1) {
+          // Mark as failed
+          messages[idx].receiptFailed = true;
+          localStorage.setItem(messagesKey, JSON.stringify(messages));
+          console.log(`LocalStorage updated: message ${receiptId} => receiptFailed=true in conversation ${recipient}`);
 
-        // If the conversation is currently active, update the UI indicator
-        if (recipient === currentConversation) {
-          const msgDiv = chatWindow.querySelector(`[data-receipt-id="${receiptId}"]`);
-          if (msgDiv) {
-            const rSpan = msgDiv.querySelector('.receipt-indicator');
-            if (rSpan) {
-              rSpan.classList.remove('receipt-circle', 'receipt-spinner');
-              rSpan.classList.add('receipt-x-circle');
-              rSpan.textContent = '✖';
-              rSpan.title = 'Click to resend';
-              // Hook up manual resend on the red “X”
-              rSpan.addEventListener('click', () => {
-                resendFailedMessageLocal(receiptId);
-              }, { once: true });
+          // If the conversation is currently active, update the UI indicator
+          if (recipient === currentConversation) {
+            const msgDiv = chatWindow.querySelector(`[data-receipt-id="${receiptId}"]`);
+            if (msgDiv) {
+              const rSpan = msgDiv.querySelector('.receipt-indicator');
+              if (rSpan) {
+                rSpan.classList.remove('receipt-circle', 'receipt-spinner');
+                rSpan.classList.add('receipt-x-circle');
+                rSpan.textContent = '✖';
+                rSpan.title = 'Click to resend';
+                // Hook up manual resend on the red “X”
+                rSpan.addEventListener('click', () => {
+                  resendFailedMessageLocal(receiptId);
+                }, { once: true });
+              }
             }
           }
         }
-      }
-    });
+      });
+    }
+
+    // Finally, remove from retry map and add to displayedReceiptIds to prevent further processing
+    messageRetryMap.delete(receiptId);
+    displayedReceiptIds.add(receiptId);
+    console.log(`Removed receipt ID ${receiptId} from messageRetryMap after marking as failed.`);
   }
-
-  // Finally, remove from retry map and add to displayedReceiptIds to prevent further processing
-  messageRetryMap.delete(receiptId);
-  displayedReceiptIds.add(receiptId);
-  console.log(`Removed receipt ID ${receiptId} from messageRetryMap after marking as failed.`);
-}
-
 
   // Compute Hash for Duplicate Detection
   function computeHash(idString, text) {
@@ -909,52 +930,41 @@ function markMessageAsFailed(receiptId) {
   }
 
   // Setup Receipt Timeout with 60-Second Interval
-function setupReceiptTimeout(receiptId) {
-  if (!messageRetryMap.has(receiptId)) return;
-  const messageInfo = messageRetryMap.get(receiptId);
+  function setupReceiptTimeout(receiptId) {
+    if (!messageRetryMap.has(receiptId)) return;
+    const messageInfo = messageRetryMap.get(receiptId);
 
-  // Optional: if we want to ensure there’s only one active timer at a time,
-  // we can clear any previous one now. (Often good practice if you might call
-  // setupReceiptTimeout(...) more than once for the same message.)
-  if (messageInfo.timeoutId) {
-    clearTimeout(messageInfo.timeoutId);
-    messageInfo.timeoutId = null;
+    if (messageInfo.timeoutId) {
+      clearTimeout(messageInfo.timeoutId);
+      messageInfo.timeoutId = null;
+    }
+
+    const timeoutId = setTimeout(() => {
+      if (!messageRetryMap.has(receiptId)) {
+        console.log(`Timer fired for ${receiptId} but it's no longer in the map (likely acked). Doing nothing.`);
+        return;
+      }
+
+      const currentInfo = messageRetryMap.get(receiptId);
+      currentInfo.timeoutId = null;
+
+      currentInfo.retries += 1;
+      console.log(`No receipt for ${receiptId}; retry #${currentInfo.retries}`);
+
+      if (currentInfo.retries > MAX_RECEIPT_RESENDS) {
+        console.log(`Max resends for ${receiptId} reached. Marking as failed.`);
+        markMessageAsFailed(receiptId);
+        messageRetryMap.delete(receiptId);
+        displayedReceiptIds.add(receiptId);
+      } else {
+        resendMessage(currentInfo.message);
+        setupReceiptTimeout(receiptId);
+      }
+    }, 60000);
+
+    messageInfo.timeoutId = timeoutId;
+    messageRetryMap.set(receiptId, messageInfo);
   }
-
-  const timeoutId = setTimeout(() => {
-    // If the message was acked or removed meanwhile, skip everything
-    if (!messageRetryMap.has(receiptId)) {
-      console.log(`Timer fired for ${receiptId} but it's no longer in the map (likely acked). Doing nothing.`);
-      return;
-    }
-
-    // Re-fetch the current info from the map (in case it was updated)
-    const currentInfo = messageRetryMap.get(receiptId);
-
-    // Clear the old ID so we can set a fresh timeout if needed
-    currentInfo.timeoutId = null;
-
-    currentInfo.retries += 1;
-    console.log(`No receipt for ${receiptId}; retry #${currentInfo.retries}`);
-
-    if (currentInfo.retries > MAX_RECEIPT_RESENDS) {
-      console.log(`Max resends for ${receiptId} reached. Marking as failed.`);
-      markMessageAsFailed(receiptId);  // Your own function to update UI, etc.
-      messageRetryMap.delete(receiptId);
-      displayedReceiptIds.add(receiptId); // If you wish to keep track of “seen” IDs
-    } else {
-      // Perform the actual resend
-      resendMessage(currentInfo.message);
-
-      // Schedule the *next* retry once more
-      setupReceiptTimeout(receiptId);
-    }
-  }, 60000); // 60 seconds, or adjust as desired
-
-  // Record this new timer ID in the map
-  messageInfo.timeoutId = timeoutId;
-  messageRetryMap.set(receiptId, messageInfo);
-}
 
   // Resend Failed Message Function
   function resendFailedMessage(oldReceiptId, messageInfo) {
@@ -969,7 +979,6 @@ function setupReceiptTimeout(receiptId) {
       return;
     }
 
-    // **Adjusted Regex to account for optional trailing spaces**
     const receiptIdPattern = new RegExp(`\\{${oldReceiptId}\\s*$`);
     const updatedPacket = oldPacket.replace(receiptIdPattern, `{${newReceiptId}`);
 
@@ -982,7 +991,7 @@ function setupReceiptTimeout(receiptId) {
         messages[idx].receiptReceived = false;
         messages[idx].receiptFailed = false;
         messages[idx].rawPacket = updatedPacket;
-        messages[idx].sessionId = currentSessionId; // Update sessionId
+        messages[idx].sessionId = currentSessionId;
         localStorage.setItem(messagesKey, JSON.stringify(messages));
         console.log(`Updated message ${oldReceiptId} to new receiptId ${newReceiptId} in localStorage.`);
       }
@@ -995,7 +1004,6 @@ function setupReceiptTimeout(receiptId) {
       messageInfo.tickSpan.removeAttribute('title');
     }
 
-    // Update messageRetryMap with the newReceiptId
     messageRetryMap.set(newReceiptId, {
       tickSpan: messageInfo.tickSpan,
       retries: 0,
@@ -1029,8 +1037,6 @@ function setupReceiptTimeout(receiptId) {
     }
 
     const newReceiptId = generateReceiptId();
-
-    // **Adjusted Regex to account for optional trailing spaces**
     const receiptIdPattern = new RegExp(`\\{${oldReceiptId}\\s*$`);
     const updatedPacket = oldMsg.rawPacket.replace(receiptIdPattern, `{${newReceiptId}`);
 
@@ -1038,7 +1044,7 @@ function setupReceiptTimeout(receiptId) {
     messages[idx].receiptReceived = false;
     messages[idx].receiptFailed = false;
     messages[idx].rawPacket = updatedPacket;
-    messages[idx].sessionId = currentSessionId; // Update sessionId
+    messages[idx].sessionId = currentSessionId;
     localStorage.setItem(messagesKey, JSON.stringify(messages));
 
     const msgDiv = chatWindow.querySelector(`[data-receipt-id="${oldReceiptId}"]`);
@@ -1052,7 +1058,6 @@ function setupReceiptTimeout(receiptId) {
         rSpan.removeAttribute('title');
       }
 
-      // Update messageRetryMap with the newReceiptId
       messageRetryMap.set(newReceiptId, {
         tickSpan: rSpan,
         retries: 0,
@@ -1075,7 +1080,7 @@ function setupReceiptTimeout(receiptId) {
     messages.push({
       from: sender,
       text: messageContent,
-      timestamp: timestamp, // ISO string
+      timestamp: timestamp,
       receiptId: null,
       receiptReceived: false,
       receiptFailed: false,
@@ -1211,12 +1216,11 @@ function setupReceiptTimeout(receiptId) {
         testBtn.classList.remove('btn-info','btn-success','btn-danger');
         testBtn.classList.add('btn-info');
         testBtn.textContent = 'Test 🕒';
-        // **Directly set up retry logic without relying on tickSpan**
         messageRetryMap.set(receiptId, {
-          button: testBtn, // Reference to the Test button
-          retries: 0, 
-          timeoutId: null, 
-          message: rawPacket, 
+          button: testBtn,
+          retries: 0,
+          timeoutId: null,
+          message: rawPacket,
           isTest: true,
           sessionId: currentSessionId
         });
@@ -1250,15 +1254,13 @@ function setupReceiptTimeout(receiptId) {
     conversations.push(recipientCallsign);
     localStorage.setItem(conversationsKey, JSON.stringify(conversations));
     fetchSymbolIfNeeded(recipientCallsign);
-    
-    // **Set the new conversation as active**
+
     currentConversation = recipientCallsign;
-    
+
     loadConversations();
     loadMessages();
     addConversationModal.hide();
     recipientInput.value = '';
-    // Initialize retry logic for the new conversation
     initializeRetryLogicForConversation(recipientCallsign);
   });
 
@@ -1317,7 +1319,7 @@ function setupReceiptTimeout(receiptId) {
         msg.receiptId || null,
         msg.receiptReceived || false,
         msg.receiptFailed || false,
-        msg.rawPacket || null // Pass rawPacket here
+        msg.rawPacket || null
       );
     });
     chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -1352,22 +1354,21 @@ function setupReceiptTimeout(receiptId) {
         body: JSON.stringify({ packet: rawPacket })
       });
       if (response.ok) {
-        const timestamp = new Date().toISOString(); // ISO string
+        const timestamp = new Date().toISOString();
         const messagesKey = `messages_${currentUserCallsign}_${currentConversation}`;
         let messages = JSON.parse(localStorage.getItem(messagesKey)) || [];
         messages.push({
           from: currentUserCallsign,
           text: textToSend,
-          timestamp: timestamp, // ISO string
+          timestamp: timestamp,
           receiptId: receiptId,
           receiptReceived: false,
           receiptFailed: false,
           rawPacket: rawPacket,
-          sessionId: currentSessionId // Attach sessionId
+          sessionId: currentSessionId
         });
         localStorage.setItem(messagesKey, JSON.stringify(messages));
-        appendMessage('You', textToSend, timestamp, receiptId, false, false, rawPacket); // Pass rawPacket here
-        // Setup retry logic **only here in sendDirectMessage**
+        appendMessage('You', textToSend, timestamp, receiptId, false, false, rawPacket);
         if (receiptId) {
           const tickSpan = chatWindow.querySelector(`[data-receipt-id="${receiptId}"] .receipt-indicator`);
           if (tickSpan) {
@@ -1447,7 +1448,7 @@ function setupReceiptTimeout(receiptId) {
         return;
       }
 
-      const timestamp = new Date(data.timestamp).toISOString(); // ISO string
+      const timestamp = new Date(data.timestamp).toISOString();
       if (sourceCallsign === currentUserCallsign) {
         return;
       }
@@ -1473,7 +1474,7 @@ function setupReceiptTimeout(receiptId) {
         if (receiptMatch && receiptEnabled) {
           const foundId = receiptMatch[1].toUpperCase();
           handleReceipt(foundId);
-          return; 
+          return;
         }
 
         if (receiptId && displayedReceiptIds.has(receiptId)) {
@@ -1488,15 +1489,13 @@ function setupReceiptTimeout(receiptId) {
         }
 
         if (currentConversation === sourceCallsign) {
-          appendMessage(callsignDisplayName(sourceCallsign), messageText, timestamp, receiptId, false, false, null); // rawPacket is null for incoming
+          appendMessage(callsignDisplayName(sourceCallsign), messageText, timestamp, receiptId, false, false, null);
         }
         if (receiptId) displayedReceiptIds.add(receiptId);
 
-        // Store the incoming message
         storeIncomingMessage(sourceCallsign, messageText, timestamp);
         addConversationIfNotExists(sourceCallsign);
 
-        // Increment unread count if not in active conversation
         if (currentConversation !== sourceCallsign) {
           incrementUnreadCount(sourceCallsign);
         }
@@ -1569,15 +1568,13 @@ function setupReceiptTimeout(receiptId) {
       }
 
       if (currentConversation === sender) {
-        appendMessage(callsignDisplayName(sender), displayText, timestamp, receiptId, false, false, null); // rawPacket is null for incoming
+        appendMessage(callsignDisplayName(sender), displayText, timestamp, receiptId, false, false, null);
       }
       if (receiptId) displayedReceiptIds.add(receiptId);
 
-      // Store the incoming message
       storeIncomingMessage(sender, messageContent, timestamp);
       addConversationIfNotExists(sender);
 
-      // Increment unread count if not in active conversation
       if (currentConversation !== sender) {
         incrementUnreadCount(sender);
       }
@@ -1615,7 +1612,6 @@ function setupReceiptTimeout(receiptId) {
       messages.forEach(msg => {
         if (msg.from === currentUserCallsign && msg.receiptId && !msg.receiptReceived && !msg.receiptFailed) {
           // Do not set up retry for loaded messages to prevent resending on page refresh
-          // Only messages sent in the current session have retry logic
         }
       });
     });
@@ -1628,7 +1624,6 @@ function setupReceiptTimeout(receiptId) {
     messages.forEach(msg => {
       if (msg.from === currentUserCallsign && msg.receiptId && !msg.receiptReceived && !msg.receiptFailed) {
         // Do not set up retry for loaded messages to prevent resending on page refresh
-        // Only new messages sent in the current session will have retry logic
       }
     });
   }
@@ -1644,7 +1639,6 @@ function setupReceiptTimeout(receiptId) {
   // Prevent Resending Old Messages
   function initializeGlobalRetryLogic() {
     // No longer initializing retry logic for loaded messages
-    // This prevents resending old messages upon page refresh
   }
   initializeGlobalRetryLogic();
 
@@ -1656,13 +1650,13 @@ function setupReceiptTimeout(receiptId) {
     }
     const confirmDeletion = confirm(`Are you sure you want to delete the callsign "${currentUserCallsign}" and all its conversation history? This action cannot be undone.`);
     if (!confirmDeletion) return;
-    
+
     const deletedCallsign = currentUserCallsign;
-    
+
     // Remove from userCallsigns
     userCallsigns = userCallsigns.filter(c => c !== deletedCallsign);
     localStorage.setItem('userCallsigns', JSON.stringify(userCallsigns));
-    
+
     // Remove lastSelectedCallsign if it was the deleted one
     const lastSelectedCallsign = localStorage.getItem('lastSelectedCallsign');
     if (lastSelectedCallsign === deletedCallsign) {
@@ -1675,7 +1669,7 @@ function setupReceiptTimeout(receiptId) {
         currentUserCallsign = null;
       }
     }
-    
+
     // Remove localStorage items related to the deleted callsign
     Object.keys(localStorage).forEach(key => {
       if (key === `conversations_${deletedCallsign}` ||
@@ -1684,8 +1678,8 @@ function setupReceiptTimeout(receiptId) {
         localStorage.removeItem(key);
       }
     });
-    
-    // **Clear any active timeouts related to the deleted callsign**
+
+    // Clear any active timeouts related to the deleted callsign
     messageRetryMap.forEach((info, id) => {
       if (id.startsWith(deletedCallsign)) {
         if (info.timeoutId) {
@@ -1697,18 +1691,17 @@ function setupReceiptTimeout(receiptId) {
 
     // Refresh the dropdown
     populateUserCallsignDropdown();
-    
+
     // If a new callsign is selected, update the UI accordingly
     if (currentUserCallsign) {
       userCallsignSelect.value = currentUserCallsign;
       loadConversations();
       loadMessages();
     } else {
-      // No callsigns left
       chatWindow.innerHTML = '';
       conversationsList.innerHTML = '';
     }
-    
+
     alert(`Callsign "${deletedCallsign}" and its conversation history have been deleted.`);
   });
 
