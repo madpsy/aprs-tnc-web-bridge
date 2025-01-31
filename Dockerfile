@@ -19,6 +19,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application files into the container
 COPY tnc.py /app
+ADD static /app/static
 
 # Expose the necessary ports
 EXPOSE 5001
