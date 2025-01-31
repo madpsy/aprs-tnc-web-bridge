@@ -1,6 +1,7 @@
 #!/bin/bash
 docker run -d \
 	--name tnc \
+        --restart unless-stopped \
 	--privileged \
 	-v /dev:/dev \
        	-v $(pwd)/config:/app/config \
