@@ -1,6 +1,4 @@
 #!/bin/bash
-docker stop tnc
-docker rm tnc
 docker run -d \
 	--name tnc \
 	--privileged \
