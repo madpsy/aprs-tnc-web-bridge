@@ -70,7 +70,7 @@ socketio = SocketIO(async_mode='eventlet')  # Explicitly set eventlet as async m
 packet_history = deque()
 
 # Initialise settings
-CONFIG_FILE = 'settings.yaml'
+CONFIG_FILE = 'config/settings.yaml'
 config_lock = threading.Lock()
 config = {}
 
@@ -778,7 +778,7 @@ class MqttManager:
 #                           TELEMETRY MANAGER                                 #
 ###############################################################################
 class TelemetryManager:
-    def __init__(self, filepath='telemetry.yaml'):
+    def __init__(self, filepath='config/telemetry.yaml'):
         self.filepath = filepath
         self.lock = threading.RLock()
         self.state = {}
@@ -1935,11 +1935,11 @@ def main():
     global packet_history
     if connection_type == 'serial':
         sanitized_device = device.replace('/', '_')
-        filename = f"aprs_packets_{connection_type}_{sanitized_device}.yaml"
+        filename = f"logs/aprs_packets_{connection_type}_{sanitized_device}.yaml"
     elif connection_type == 'aprs-is':
-        filename = f"aprs_packets_aprs-is.yaml"
+        filename = f"logs/aprs_packets_aprs-is.yaml"
     else:  # 'tcp'
-        filename = f"aprs_packets_{connection_type}_{host}_{port}.yaml"
+        filename = f"logs/aprs_packets_{connection_type}_{host}_{port}.yaml"
 
     print(f"Using filename for logging: {filename}")
 
@@ -1957,7 +1957,7 @@ def main():
         except Exception as e:
             print("Error loading from file:", e)
 
-    telemetry_manager = TelemetryManager(filepath='telemetry.yaml')
+    telemetry_manager = TelemetryManager(filepath='config/telemetry.yaml')
     outgoing_aprs_queue = queue.Queue()
 
     all_data = telemetry_manager.get_telemetry_data()
