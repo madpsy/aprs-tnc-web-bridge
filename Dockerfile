@@ -1,5 +1,5 @@
 # Use Python 3 as the base image
-FROM python:3.10
+FROM python:3.10-slim
 
 # Set the working directory in the container
 WORKDIR /app
@@ -7,7 +7,6 @@ WORKDIR /app
 # Copy requirements.txt into the container
 COPY requirements.txt /app
 
-# Install native build tools and any needed dev libraries
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -19,7 +18,7 @@ RUN pip3 install --upgrade pip setuptools wheel
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application files into the container
-COPY . /app
+COPY tnc.py /app
 
 # Expose the necessary ports
 EXPOSE 5001
