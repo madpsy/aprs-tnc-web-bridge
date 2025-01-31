@@ -1,8 +1,14 @@
+To run via Python directly:
+
 python3 -m venv venv
 source venv/bin/activate
 pip3 install -r requirements.txt
 python3 tnc.py
 
+To run via Docker:
+
+bash docker-build.sh
+bash docker-start.sh
 
 To view the web interface, visit:
 http://127.0.0.1:5001/
