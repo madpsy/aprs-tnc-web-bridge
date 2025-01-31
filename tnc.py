@@ -16,9 +16,14 @@ import os
 import json  # For sending JSON over UDP
 import serial  # Added for serial connections
 import sys
-
-# ### MQTT
 import paho.mqtt.client as mqtt
+
+os.makedirs("logs", exist_ok=True)
+os.makedirs("config", exist_ok=True)
+
+log_file = open("logs/tnc.log", "a", buffering=1)  # "a"=append, buffering=1=line-buffered
+sys.stdout = log_file
+sys.stderr = log_file
 
 # Constants for KISS
 KISS_FLAG = 0xC0
