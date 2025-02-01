@@ -1,20 +1,33 @@
-To run via Python directly:
+Fetch the repo:
+
+git clone https://github.com/madpsy/aprs-tnc-web-bridge.git
+cd aprs-tnc-web-bridge
+
+Two options for running the application:-
+
+Run with Python directly:
 
 python3 -m venv venv
 source venv/bin/activate
 pip3 install -r requirements.txt
 python3 tnc.py
 
-To run via Docker:
+Or build/run via Docker:
 
 bash docker-build.sh
 bash docker-start.sh
 
-To view the web interface, visit:
+View the web interface, in a browser open:
 http://127.0.0.1:5001/
+
+There is a link to the settings in the bottom right of the map, or go direct:
+http://127.0.0.1:5001/static/settings.html
 
 By default it will listen on all interfaces so can also access from any host on the same network.
 
-There is a link to the settings in the bottom right of the map, or go direct:
+In order to update to the latest version:
+cd aprs-tnc-web-bridge
+git pull
 
-http://127.0.0.1:5001/static/settings.html
+If using docker, rebuild the latest with:
+bash docker-build.sh ; bash docker-stop.sh ; bash docker-start.sh
