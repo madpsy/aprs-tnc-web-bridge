@@ -1766,7 +1766,8 @@ def receive_telemetry():
 ###############################################################################
 @socketio.on('connect')
 def handle_connect():
-    print(f"New WebSocket client connected. Sending last {len(packet_history)} packets.")
+    client_ip = request.remote_addr
+    print(f"New WebSocket client connected from {client_ip}. Sending last {len(packet_history)} packets.")
     for pkt in packet_history:
         emit('aprs_packet', pkt)
 
