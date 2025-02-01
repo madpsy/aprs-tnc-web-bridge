@@ -117,7 +117,24 @@
         .send-message:hover {
             text-decoration: underline;
         }
-
+        .qrz-link {
+            color: #007BFF;
+            text-decoration: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .qrz-link:hover {
+            text-decoration: underline;
+        }
+        .aprsfi-link {
+            color: #007BFF;
+            text-decoration: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .aprsfi-link:hover {
+            text-decoration: underline;
+        }
         #ws-indicator {
             position: absolute;
             top: 10px;
@@ -1079,14 +1096,27 @@ function updateStatistics() {
             if (m.status) popupContent += `<div><strong>Status:</strong> ${escapeHtml(m.status)}</div>`;
 
             // Link to view raw data and messages for this station
+	    const stationTrimmed = station.replace(/-.*/, "");
             popupContent += `
                 <div>
                     <a href="#" class="view-raw-link" onclick="viewRawData('${escapeHtml(station)}')">
-                        View Packets
+                        Packets
                     </a>
                     | 
                     <a href="/static/messages.html?conversation=${encodeURIComponent(station)}" class="send-message" target="rightFrame">
-                        Send Message
+                        Messages
+                    </a>
+		    |
+		    <a href="https://www.qrz.com/db/${encodeURIComponent(stationTrimmed)}" 
+		       class="qrz-link" 
+		       target="_blank">
+		      QRZ
+		    </a>
+		    |
+		    <a href="https://aprs.fi/info/a/${encodeURIComponent(station)}" 
+                       class="aprsfi-link" 
+                       target="_blank">
+                      aprs.fi
                     </a>
                 </div>
             `;
