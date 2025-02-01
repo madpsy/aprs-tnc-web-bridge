@@ -9,7 +9,7 @@ import aprslib
 import yaml
 from datetime import datetime
 from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, disconnect
 from collections import deque
 import time
 import os
@@ -44,6 +44,10 @@ filename = None
 
 # Global for iGate callsign (used for sending to UDP)
 igate_callsign = None
+
+# Globals for connection tracking
+connected_ip = None
+active_sids = {}
 
 # ### MQTT: Global references for MQTT
 mqtt_host = "127.0.0.1"
@@ -1765,11 +1769,48 @@ def receive_telemetry():
 #                           SOCKET.IO EVENTS                                  #
 ###############################################################################
 @socketio.on('connect')
-def handle_connect():
+def handle_connect(auth):  # accept the argument
+    global connected_ip, active_sids
     client_ip = request.remote_addr
-    print(f"New WebSocket client connected from {client_ip}. Sending last {len(packet_history)} packets.")
-    for pkt in packet_history:
-        emit('aprs_packet', pkt)
+    current_sid = request.sid
+
+    if connected_ip is None:
+        # No one connected yet, accept this IP
+        connected_ip = client_ip
+        print(f"No IP was connected; now using IP={connected_ip}.")
+    else:
+        # If a different IP arrives, disconnect all current sessions
+        if connected_ip != client_ip:
+            print(f"New IP {client_ip} connected. Disconnecting all clients from {connected_ip}...")
+            for sid in list(active_sids.keys()):
+                # Option A: top-level disconnect
+                disconnect(sid=sid, namespace='/')
+                # Option B: or socketio.server.disconnect(sid, namespace='/')
+                del active_sids[sid]
+
+            connected_ip = client_ip
+
+    # Track the new session
+    active_sids[current_sid] = client_ip
+    print(f"Client connected: SID={current_sid}, IP={client_ip}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    global connected_ip, active_sids
+    current_sid = request.sid
+
+    if current_sid in active_sids:
+        ip = active_sids[current_sid]
+        print(f"Client disconnected: SID={current_sid}, IP={ip}")
+        del active_sids[current_sid]
+
+        # If no sessions left from that IP, free up `connected_ip`
+        still_has_sessions = any(stored_ip == ip for stored_ip in active_sids.values())
+        if not still_has_sessions:
+            connected_ip = None
+            print(f"No more sessions from IP={ip}. The server is now free for a new IP.")
+    else:
+        print(f"Unknown SID disconnected: {current_sid}")
 
 ###############################################################################
 #                     PROXY (TRANSPARENT TCP BRIDGE) CODE                     #
