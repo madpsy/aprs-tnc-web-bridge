@@ -1783,10 +1783,7 @@ def handle_connect(auth):  # accept the argument
         if connected_ip != client_ip:
             print(f"New IP {client_ip} connected. Disconnecting all clients from {connected_ip}...")
             for sid in list(active_sids.keys()):
-                # Option A: top-level disconnect
                 disconnect(sid=sid, namespace='/')
-                # Option B: or socketio.server.disconnect(sid, namespace='/')
-                del active_sids[sid]
 
             connected_ip = client_ip
 
