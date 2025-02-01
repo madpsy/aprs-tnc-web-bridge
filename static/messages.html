@@ -49,6 +49,15 @@ body {
   margin-bottom: 20px;
 }
 
+.status-dot {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background-color: red; /* default color, meaning 'disconnected' */
+}
+
 /* The main scrolling region for messages */
 .chat-window {
   flex: 1;           /* Grows to fill remaining space */
@@ -233,7 +242,10 @@ body {
 <div class="chat-container">
   <div class="sidebar">
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <h4>Messages</h4>
+      <h4>
+	 Messages
+	 <span id="connectionStatusDot" class="status-dot"></span>
+      </h4>
       <button class="btn btn-primary btn-sm" id="addUserCallsignBtn">Add Callsign</button>
     </div>
     <!-- 'Test' and 'Delete' buttons in line with callsign dropdown -->
@@ -392,6 +404,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const socket = io.connect(location.protocol + '//' + location.hostname + ':' + location.port);
+  const connectionStatusDot = document.getElementById('connectionStatusDot');
+
+socket.on('connect', () => {
+  connectionStatusDot.style.backgroundColor = 'green';
+});
+
+socket.on('disconnect', (reason) => {
+  connectionStatusDot.style.backgroundColor = 'red';
+});
+
+socket.on('connect_error', (error) => {
+  connectionStatusDot.style.backgroundColor = 'red';
+});
 
   socket.on('connect', () => {
     console.log(`Connected to Socket.IO server with ID: ${socket.id}`);
