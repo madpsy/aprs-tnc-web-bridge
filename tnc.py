@@ -146,8 +146,11 @@ DEFAULT_SETTINGS = {
 def write_default_settings():
     with open(CONFIG_FILE, 'w') as f:
         yaml.dump(DEFAULT_SETTINGS, f)
-    print(f"Default settings.yaml created. Please review and modify it as needed.")
-    exit(1)
+    print(f"Default settings.yaml created. Restarting with default settings...")
+    def restart():
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
+    threading.Thread(target=restart, daemon=True).start()
 
 def load_settings():
     global config
