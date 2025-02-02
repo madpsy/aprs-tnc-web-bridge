@@ -19,7 +19,7 @@
         <input type="text" id="callsignFilter" class="form-control" placeholder="Filter from..." size="12" maxlength="10" style="width: auto;">
       </div>
       <div>
-        Connected: <span id="connectionStatusDot" style="width:15px; height:15px; border-radius:50%; background-color:red; display:inline-block;"></span>
+        Connected: <span id="connectionStatusDot" style="width:10px; height:10px; border-radius:50%; background-color:red; display:inline-block;"></span>
       </div>
       <div>
         <button id="clearButton" class="btn btn-danger">Clear</button>
@@ -37,6 +37,23 @@
     // Global objects to persist expanded states across re-renderings.
     let persistedExpandedStates = {};
     let persistedPacketDetailsStates = {};
+
+    /**
+     * Save the current conversations (packets) to localStorage under a unique namespace.
+     */
+    function saveConversationsToLocalStorage() {
+      localStorage.setItem('packets_seen', JSON.stringify(conversations));
+    }
+
+    /**
+     * Load previously saved conversations (packets) from localStorage.
+     */
+    function loadConversationsFromLocalStorage() {
+      const stored = localStorage.getItem('packets_seen');
+      if (stored) {
+        conversations = JSON.parse(stored);
+      }
+    }
 
     /**
      * Helper function to recursively render nested objects and arrays.
@@ -378,6 +395,30 @@
         });
     }
 
+    /**
+     * Processes a single packet by grouping it under its 'from' and 'to' fields.
+     */
+    function processPacket(packet) {
+      if (!packet.from || !packet.to) {
+        console.warn("Packet missing required fields:", packet);
+        return;
+      }
+      // Record the time this packet was received.
+      packet.receivedAt = Date.now();
+
+      fetchSymbolIfNeeded(packet.from);
+      if (!conversations[packet.from]) {
+        conversations[packet.from] = {};
+      }
+      if (!conversations[packet.from][packet.to]) {
+        conversations[packet.from][packet.to] = [];
+      }
+      conversations[packet.from][packet.to].push(packet);
+
+      // Save updated conversations to localStorage.
+      saveConversationsToLocalStorage();
+    }
+
     // Connect to the local Socket.IO server (same origin)
     const socket = io('/');
 
@@ -399,27 +440,6 @@
       connectionStatusDot.style.backgroundColor = 'red';
     });
 
-    /**
-     * Processes a single packet by grouping it under its 'from' and 'to' fields.
-     */
-    function processPacket(packet) {
-      if (!packet.from || !packet.to) {
-        console.warn("Packet missing required fields:", packet);
-        return;
-      }
-      // Record the time this packet was received.
-      packet.receivedAt = Date.now();
-
-      fetchSymbolIfNeeded(packet.from);
-      if (!conversations[packet.from]) {
-        conversations[packet.from] = {};
-      }
-      if (!conversations[packet.from][packet.to]) {
-        conversations[packet.from][packet.to] = [];
-      }
-      conversations[packet.from][packet.to].push(packet);
-    }
-
     socket.on('aprs_packet', (data) => {
       console.log('Received "aprs_packet" event:', data);
       if (Array.isArray(data)) {
@@ -431,14 +451,17 @@
     });
 
     document.getElementById('clearButton').addEventListener('click', () => {
+      // Clear the conversations object and remove our namespace from localStorage.
       conversations = {};
+      localStorage.removeItem('packets_seen');
       loadConversations();
     });
 
     // Refresh display on filter input change.
     document.getElementById('callsignFilter').addEventListener('input', loadConversations);
 
-    // Call loadConversations() on page load so the waiting message appears if no packets.
+    // On page load, load stored packets (if any) then render.
+    loadConversationsFromLocalStorage();
     loadConversations();
 
     // Update the "time ago" display every second.
