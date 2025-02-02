@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import eventlet
 # Monkey patch as early as possible
 eventlet.monkey_patch()
@@ -18,14 +19,44 @@ import serial  # Added for serial connections
 import sys
 import paho.mqtt.client as mqtt
 
+# Create needed directories
 os.makedirs("logs", exist_ok=True)
 os.makedirs("config", exist_ok=True)
 
-log_file = open("logs/tnc.log", "a", buffering=1)  # "a"=append, buffering=1=line-buffered
-sys.stdout = log_file
-sys.stderr = log_file
+# Open the log file.
+# (We delay reassigning sys.stdout/sys.stderr until after Socket.IO is available.)
+log_file = open("logs/tnc.log", "a", buffering=1)  # "a" = append, buffering=1 (line-buffered)
 
-# Constants for KISS
+# ------------------------------------------------------------------------------
+#  LogTee: a file-like object that writes to the log file and also emits via websockets.
+#  We use a global variable "socketio_instance" (set later) so that every call to write()
+#  sends the message to the Socket.IO namespace '/logs'.
+# ------------------------------------------------------------------------------
+socketio_instance = None  # Will be set later in main() after Socket.IO is initialised.
+
+class LogTee:
+    def __init__(self, logfile, namespace='/logs'):
+        self.logfile = logfile
+        self.namespace = namespace
+
+    def write(self, message):
+        # Write to the log file
+        self.logfile.write(message)
+        self.logfile.flush()
+        # If Socket.IO is available, emit the log message
+        if socketio_instance is not None:
+            try:
+                socketio_instance.emit('log', {'msg': message}, namespace=self.namespace)
+            except Exception as e:
+                self.logfile.write(f"\n[Error emitting log via Socket.IO: {e}]\n")
+                self.logfile.flush()
+
+    def flush(self):
+        self.logfile.flush()
+
+# ------------------------------------------------------------------------------
+#  Constants and Global Variables
+# ------------------------------------------------------------------------------
 KISS_FLAG = 0xC0
 KISS_CMD_DATA = 0x00
 
@@ -72,7 +103,7 @@ aprs_lock = threading.Lock()  # To synchronise access to APRS socket
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 
-# Initialise SocketIO without passing the app initially
+# Initialise SocketIO without passing the app initially.
 socketio = SocketIO(async_mode='eventlet')  # Explicitly set eventlet as async mode
 
 # Deque for storing the last 'r' packets (maxlen set in main)
@@ -83,7 +114,9 @@ CONFIG_FILE = 'config/settings.yaml'
 config_lock = threading.Lock()
 config = {}
 
-# HTML page for the root
+# ------------------------------------------------------------------------------
+#  HTML page for the root
+# ------------------------------------------------------------------------------
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -115,10 +148,21 @@ HTML_PAGE = """
 def index():
     return HTML_PAGE
 
-###############################################################################
-#                          SETTINGS MANAGEMENT                                 #
-###############################################################################
+# ------------------------------------------------------------------------------
+#  API endpoint to serve the current log file via HTTP
+# ------------------------------------------------------------------------------
+@app.route('/logs', methods=['GET'])
+def get_logs():
+    try:
+        with open('logs/tnc.log', 'r') as f:
+            content = f.read()
+        return content, 200, {'Content-Type': 'text/plain'}
+    except Exception as e:
+        return f"Error reading log file: {e}", 500
 
+# ------------------------------------------------------------------------------
+#                          SETTINGS MANAGEMENT
+# ------------------------------------------------------------------------------
 DEFAULT_SETTINGS = {
     'connection_type': 'tcp',  # 'tcp', 'serial', or 'aprs-is'
     'host': '127.0.0.1',
@@ -206,9 +250,9 @@ def validate_settings():
         print("Error: 'aprs_filter' must be a string starting with 'm/'.")
         exit(1)
 
-###############################################################################
-#                          API ENDPOINTS FOR SETTINGS                         #
-###############################################################################
+# ------------------------------------------------------------------------------
+#  API ENDPOINTS FOR SETTINGS
+# ------------------------------------------------------------------------------
 @app.route('/api/settings', methods=['GET', 'POST'])
 def manage_settings():
     global config
@@ -241,9 +285,9 @@ def manage_settings():
         threading.Thread(target=restart, daemon=True).start()
         return jsonify({"status": "Settings updated. Restarting..."}), 200
 
-###############################################################################
-#                          TNC CONNECTION CLASS                              #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                          TNC CONNECTION CLASS
+# ------------------------------------------------------------------------------
 class TNCConnection:
     """
     Abstracts the connection to the TNC, supporting both TCP and Serial connections.
@@ -296,9 +340,9 @@ class TNCConnection:
         elif self.connection_type == 'serial':
             return self.conn.is_open
 
-###############################################################################
-#                          AX.25 ENCODING FUNCTIONS                           #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                          AX.25 ENCODING FUNCTIONS
+# ------------------------------------------------------------------------------
 def encode_callsign(callsign, last=False):
     parts = callsign.split('-')
     call_only = parts[0]
@@ -350,9 +394,9 @@ def build_kiss_frame(raw_aprs_packet):
     kiss_frame.append(KISS_FLAG)
     return kiss_frame
 
-###############################################################################
-#                          LOCATION HELPER FUNCTIONS                          #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                          LOCATION HELPER FUNCTIONS
+# ------------------------------------------------------------------------------
 def decimal_to_ddmm_mm(value, is_lat=True):
     negative = (value < 0)
     value = abs(value)
@@ -372,9 +416,9 @@ def decimal_to_ddmm_mm(value, is_lat=True):
 
     return f"{deg_str}{min_str}", hemi
 
-###############################################################################
-#                       PACKET PROCESSING & RECEIVER                          #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                       PACKET PROCESSING & RECEIVER
+# ------------------------------------------------------------------------------
 def decode_callsign(encoded):
     callsign = ''
     for b in encoded[:6]:
@@ -434,9 +478,9 @@ def decode_aprs(full_packet):
             print(f"APRS decode error: {e}")
         return None
 
-###############################################################################
-#                           UDP Forwarding (iGate) + MQTT-FORWARD             #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           UDP Forwarding (iGate) + MQTT-FORWARD
+# ------------------------------------------------------------------------------
 def send_via_udp(igate_callsign, raw_aprs_packet, packet_type="tx"):
     """
     Sends a JSON payload to lora.link9.net:1515 via UDP:
@@ -511,9 +555,9 @@ def loopback_tx_packet(raw_aprs_packet, igate_callsign=None):
     except Exception as e:
         print("[ERROR] loopback_tx_packet:", e)
 
-###############################################################################
-#                           KISS Frame Handler                                #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           KISS Frame Handler
+# ------------------------------------------------------------------------------
 def handle_kiss_frame(frame, filename, no_log=False, igate_callsign=None):
     if len(frame) < 1:
         if config.get('debug'):
@@ -596,9 +640,9 @@ def handle_kiss_frame(frame, filename, no_log=False, igate_callsign=None):
                 yaml.dump({"raw": full_aprs_packet, "timestamp": current_time},
                       yf, sort_keys=False, explicit_start=True)
 
-###############################################################################
-#                           MQTT MANAGER                                      #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           MQTT MANAGER
+# ------------------------------------------------------------------------------
 class MqttManager:
     """
     Handles MQTT: connect, subscribe, publish. Auto-reconnect via loop_forever.
@@ -786,9 +830,9 @@ class MqttManager:
         except Exception as e:
             print(f"[MQTT] Publish error to {topic}: {e}")
 
-###############################################################################
-#                           TELEMETRY MANAGER                                 #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           TELEMETRY MANAGER
+# ------------------------------------------------------------------------------
 class TelemetryManager:
     def __init__(self, filepath='config/telemetry.yaml'):
         self.filepath = filepath
@@ -1131,9 +1175,9 @@ class TelemetryManager:
     def mark_sent(self, from_call, changes):
         pass
 
-###############################################################################
-#                           RECONNECT & RECEIVE THREAD                        #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           RECONNECT & RECEIVE THREAD
+# ------------------------------------------------------------------------------
 def reconnect(connection_type, config, filename, no_log, igate_callsign, telemetry_manager):
     global tnc_connection
     while True:
@@ -1206,9 +1250,9 @@ def start_receive_thread(conn, connection_type, config, filename, no_log, igate_
     )
     recv_thread.start()
 
-###############################################################################
-#                           SEND FRAMES FUNCTION                               #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           SEND FRAMES FUNCTION
+# ------------------------------------------------------------------------------
 def send_frames(send_delay_ms):
     global outgoing_aprs_queue, aprs_enabled, igate_callsign, aprs_host, aprs_port, aprs_socket, tnc_connection, connection_type
     while True:
@@ -1259,9 +1303,9 @@ def send_frames(send_delay_ms):
         finally:
             outgoing_aprs_queue.task_done()
 
-###############################################################################
-#                           TELEMETRY BACKGROUND TASK                          #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           TELEMETRY BACKGROUND TASK
+# ------------------------------------------------------------------------------
 def telemetry_background_task(telemetry_manager, interval_minutes):
     while True:
         telem_data = telemetry_manager.get_telemetry_data()
@@ -1281,9 +1325,9 @@ def telemetry_background_task(telemetry_manager, interval_minutes):
                 outgoing_aprs_queue.put(m)
         time.sleep(interval_minutes * 60)
 
-###############################################################################
-#                           APRS-IS FUNCTIONS                                 #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           APRS-IS FUNCTIONS
+# ------------------------------------------------------------------------------
 def aprs_pass(callsign):
     """
     Generates APRS passcode based on the callsign.
@@ -1467,7 +1511,6 @@ def handle_aprs_is_packet(packet):
     except Exception as e:
         print(f"[ERROR] handle_aprs_is_packet: {e}")
 
-
 def receive_aprs_is_data():
     """
     Listens for incoming data from APRS-IS and processes each packet.
@@ -1503,9 +1546,9 @@ def receive_aprs_is_data():
             time.sleep(5)
             connect_aprs_is()
 
-###############################################################################
-#                           API ENDPOINTS                                     #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           API ENDPOINTS
+# ------------------------------------------------------------------------------
 @app.route('/api/send/raw', methods=['POST'])
 def send_raw():
     global tnc_connection, outgoing_aprs_queue, aprs_enabled, igate_callsign, aprs_host, aprs_port, aprs_socket, connection_type
@@ -1765,9 +1808,9 @@ def receive_telemetry():
         "channels": resp_ch
     }),200
 
-###############################################################################
-#                           SOCKET.IO EVENTS                                  #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           SOCKET.IO EVENTS
+# ------------------------------------------------------------------------------
 @socketio.on('connect')
 def handle_connect(auth):  # accept the argument
     global connected_ip, active_sids
@@ -1809,9 +1852,18 @@ def handle_disconnect():
     else:
         print(f"Unknown SID disconnected: {current_sid}")
 
-###############################################################################
-#                     PROXY (TRANSPARENT TCP BRIDGE) CODE                     #
-###############################################################################
+
+@socketio.on('connect', namespace='/logs')
+def logs_connect():
+    print("Client connected to /logs")
+
+@socketio.on('disconnect', namespace='/logs')
+def logs_disconnect():
+    print("Client disconnected from /logs")
+
+# ------------------------------------------------------------------------------
+#                     PROXY (TRANSPARENT TCP BRIDGE) CODE
+# ------------------------------------------------------------------------------
 # Global set of connected proxy clients if proxy_enabled is true
 proxy_clients = None
 
@@ -1909,9 +1961,9 @@ def start_proxy_server(port):
 
     eventlet.spawn_n(accept_clients, server)
 
-###############################################################################
-#                           MAIN FUNCTION                                     #
-###############################################################################
+# ------------------------------------------------------------------------------
+#                           MAIN FUNCTION
+# ------------------------------------------------------------------------------
 def main():
     load_settings()
 
@@ -2072,7 +2124,17 @@ def main():
         tnc_connection = None
         print("Connection type is 'aprs-is'; TNC connection is skipped.")
 
+    # Now that Socket.IO is about to be started, initialise it with the Flask app.
     socketio.init_app(app, async_mode='eventlet')
+    # Set our global socketio_instance for log emission in LogTee.
+    global socketio_instance
+    socketio_instance = socketio
+
+    # Now reassign sys.stdout and sys.stderr to our Tee so that future prints are logged and emitted.
+    sys.stdout = LogTee(log_file)
+    sys.stderr = LogTee(log_file)
+
+    print("LogTee now active");
 
     if aprs_enabled:
         eventlet.spawn_n(connect_aprs_is)
@@ -2088,4 +2150,3 @@ def main():
 
 if __name__=="__main__":
     main()
-
