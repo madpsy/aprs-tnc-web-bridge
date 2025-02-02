@@ -12,7 +12,7 @@ source venv/bin/activate
 pip3 install -r requirements.txt
 python3 tnc.py
 
-Or build/run via Docker:
+Or build/run via Docker (Linux only for now):
 
 bash docker-build.sh
 bash docker-start.sh
