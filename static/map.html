@@ -158,18 +158,19 @@
             position: fixed;
             bottom: 10px;
             left: 10px;
-            background-color: rgba(0, 0, 0, 0.7);
+            background-color: #28a745;
             color: #fff;
             padding: 8px 12px;
             border-radius: 6px;
             cursor: pointer;
             z-index: 1001;
             font-size: 14px;
+	    font-weight: bold;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             transition: background-color 0.3s ease;
         }
         #json-reopen-marker:hover {
-            background-color: rgba(0, 0, 0, 0.9);
+            background-color: #218838;
         }
 
         /* Telemetry Modal */
@@ -513,7 +514,10 @@
             Auto Zoom
         </label>
         <button id="telemetry-btn">Telemetry</button>
-        <a href="/static/settings.html" target=_new>Settings</a>
+ 	<div style="display: flex; gap: 5px; justify-content: center;">
+          <a href="/static/settings.html" target=_blank>Config</a>
+	  <a href="/static/logs.html" target=_blank>Logs</a>
+       </div>
     </div>
 
     <!-- (Removed JSON log box as it is no longer used) -->
