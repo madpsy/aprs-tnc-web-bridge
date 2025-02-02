@@ -23,44 +23,7 @@
             font-size: 12px;
         }
 
-        /* Styles for the JSON payload box */
-        #json-payload-box {
-            position: fixed; 
-            bottom: 20px;
-            left: 20px;
-            width: 300px;
-            max-height: 300px;
-            overflow-y: auto;
-            background-color: rgba(0, 0, 0, 0.8);
-            color: #fff;
-            padding: 15px;
-            border-radius: 8px;
-            display: none;
-            z-index: 1000;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        #json-payload-box .close-btn {
-            position: absolute;
-            top: 10px;
-            right: 15px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 18px;
-        }
-        .json-entry {
-            margin-bottom: 15px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
-            padding-bottom: 10px;
-        }
-        .json-entry:last-child {
-            border-bottom: none;
-        }
-        .json-entry .timestamp {
-            font-size: 12px;
-            color: #bbb;
-            margin-bottom: 5px;
-        }
+        /* (Removed JSON overlay CSS as it is no longer needed) */
 
         /* Styles for the raw data modal */
         #raw-data-modal {
@@ -189,6 +152,8 @@
             background-color: #218838;
         }
 
+        /* Instead of the JSON overlay button, we now have a Packets button.
+           Minimal changes: reusing the json-reopen-marker element. */
         #json-reopen-marker {
             position: fixed;
             bottom: 10px;
@@ -198,7 +163,6 @@
             padding: 8px 12px;
             border-radius: 6px;
             cursor: pointer;
-            display: none;
             z-index: 1001;
             font-size: 14px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -552,14 +516,9 @@
         <a href="/static/settings.html" target=_new>Settings</a>
     </div>
 
-    <!-- JSON log box -->
-    <div id="json-payload-box">
-        <span class="close-btn">&times;</span>
-        <div id="json-entries"></div>
-    </div>
-    <div id="json-reopen-marker" title="Show JSON Payload">
-        &#9664; JSON
-    </div>
+    <!-- (Removed JSON log box as it is no longer used) -->
+    <!-- The Packets button (formerly the JSON button) remains: -->
+    <div id="json-reopen-marker" title="Open Packets">Packets</div>
 
     <!-- Raw data modal -->
     <div id="raw-data-modal">
@@ -628,154 +587,119 @@
         var autoZoomCheckbox = document.getElementById('auto-zoom-checkbox');
         var firstPacketReceived = false;
 
-        // JSON box
-        var jsonBoxClosedManually = false;
-        var jsonBox = document.getElementById('json-payload-box');
-        var jsonEntries = document.getElementById('json-entries');
+        // (Removed JSON box variables since the overlay is no longer used)
+        // var jsonBox = document.getElementById('json-payload-box');
+        // var jsonEntries = document.getElementById('json-entries');
+        // var jsonBoxClosedManually = false;
 
         // Initialize storedMarkers from localStorage
         var storedMarkers = JSON.parse(localStorage.getItem('markers') || '{}');
 
         // Function to load saved data on page load
-function loadSavedData() {
-    // Function to parse query parameters using URLSearchParams (modern browsers)
-    function getQueryParams() {
-        var params = {};
-        var searchParams = new URLSearchParams(window.location.search);
-        for (let [key, value] of searchParams.entries()) {
-            params[key.toLowerCase()] = value;
-        }
-        return params;
-    }
-
-    var queryParams = getQueryParams();
-
-    // Populate input fields from localStorage or URL query parameters
-    var callsign = localStorage.getItem('callsign');
-    if (callsign) {
-        document.getElementById('callsign-input').value = callsign;
-    } else if (queryParams['callsign'] && queryParams['callsign'].trim() !== "") {
-        // If no callsign in localStorage, check URL query parameter
-        var urlCallsign = queryParams['callsign'].trim().toUpperCase();
-        document.getElementById('callsign-input').value = urlCallsign;
-
-        // Optionally, store the callsign from URL to localStorage for persistence
-        localStorage.setItem('callsign', urlCallsign);
-    }
-
-    var comment = localStorage.getItem('comment');
-    if (comment) document.getElementById('comment-input').value = comment;
-
-    var status = localStorage.getItem('status');
-    if (status) document.getElementById('status-input').value = status;
-
-    var symbol = localStorage.getItem('symbol');
-    if (symbol) {
-        document.getElementById('symbol-input').value = symbol;
-        var symbolUrl = 'https://lora-aprs.live/api/symbol?symbol=' + encodeURIComponent(symbol);
-        document.getElementById('symbol-preview-img').src = symbolUrl;
-        document.getElementById('symbol-preview-img').style.display = 'inline';
-    } else {
-        document.getElementById('symbol-preview-img').style.display = 'none';
-    }
-
-    // Populate JSON history from localStorage
-    var jsonHistory = JSON.parse(localStorage.getItem('jsonHistory') || '[]');
-    jsonHistory.slice(-250).forEach(function(entry) {
-        var entryDiv = document.createElement('div');
-        entryDiv.className = 'json-entry';
-
-        var localTimeStr = formatLocalTime(entry.timestamp);
-        var timestampEl = document.createElement('div');
-        timestampEl.className = 'timestamp';
-        timestampEl.textContent = `Received at: ${localTimeStr}`;
-
-        var preEl = document.createElement('pre');
-        preEl.textContent = JSON.stringify(entry.data, null, 2);
-
-        entryDiv.appendChild(timestampEl);
-        entryDiv.appendChild(preEl);
-
-        // Insert at top
-        if (jsonEntries.firstChild) {
-            jsonEntries.insertBefore(entryDiv, jsonEntries.firstChild);
-        } else {
-            jsonEntries.appendChild(entryDiv);
-        }
-    });
-    if (jsonHistory.length > 0 && !jsonBoxClosedManually) {
-        jsonBox.style.display = 'block';
-    }
-
-    // Populate markers from localStorage
-    var allLoadedLatLngs = []; // To store all marker positions
-    for (var station in storedMarkers) {
-        if (storedMarkers.hasOwnProperty(station)) {
-            var data = storedMarkers[station];
-            var customIcon = L.icon({
-                iconUrl: `https://lora-aprs.live/api/symbol?symbol=${encodeURIComponent(data.symbol_table + data.symbol)}`,
-                iconSize: [40, 40],
-                iconAnchor: [20, 20],
-                popupAnchor: [0, -20]
-            });
-            var marker = L.marker([data.latitude, data.longitude], {icon: customIcon}).addTo(map);
-            marker.bindTooltip(station, {
-                permanent: true,
-                direction: "bottom",
-                offset: [0, 10],
-                className: "station-label"
-            });
-            markers[station] = {
-                marker: marker,
-                path: data.path ? data.path.map(pt => L.latLng(pt.lat, pt.lng)) : [],
-                polyline: null,
-                timestamp: data.timestamp,
-                dots: [],
-                to: data.to || "",
-                pathInfo: data.pathInfo || [],
-                comment: data.comment || "",
-                status: data.status || "",
-                rawPackets: [] // Raw packets cannot be restored
-            };
-            allLoadedLatLngs.push([data.latitude, data.longitude]); // Collect main marker position
-
-            if (showPathsCheckbox.checked && markers[station].path.length > 0) {
-                var polyline = L.polyline(markers[station].path, {
-                    color: getColorForStation(station),
-                    weight: 5
-                }).addTo(map);
-                markers[station].polyline = polyline;
-                // Recreate dots and add their positions
-                markers[station].dots = markers[station].path.map(pt => L.circleMarker(pt, {
-                    radius: 5,
-                    color: getColorForStation(station),
-                    fillColor: getColorForStation(station),
-                    fillOpacity: 1,
-                    weight: 0
-                }).addTo(map));
-
-                // Add each path point to allLoadedLatLngs
-                markers[station].path.forEach(pt => {
-                    allLoadedLatLngs.push([pt.lat, pt.lng]);
-                });
+        function loadSavedData() {
+            // Function to parse query parameters using URLSearchParams (modern browsers)
+            function getQueryParams() {
+                var params = {};
+                var searchParams = new URLSearchParams(window.location.search);
+                for (let [key, value] of searchParams.entries()) {
+                    params[key.toLowerCase()] = value;
+                }
+                return params;
             }
-            rebuildPopup(station);
+
+            var queryParams = getQueryParams();
+
+            // Populate input fields from localStorage or URL query parameters
+            var callsign = localStorage.getItem('callsign');
+            if (callsign) {
+                document.getElementById('callsign-input').value = callsign;
+            } else if (queryParams['callsign'] && queryParams['callsign'].trim() !== "") {
+                var urlCallsign = queryParams['callsign'].trim().toUpperCase();
+                document.getElementById('callsign-input').value = urlCallsign;
+                localStorage.setItem('callsign', urlCallsign);
+            }
+
+            var comment = localStorage.getItem('comment');
+            if (comment) document.getElementById('comment-input').value = comment;
+
+            var status = localStorage.getItem('status');
+            if (status) document.getElementById('status-input').value = status;
+
+            var symbol = localStorage.getItem('symbol');
+            if (symbol) {
+                document.getElementById('symbol-input').value = symbol;
+                var symbolUrl = 'https://lora-aprs.live/api/symbol?symbol=' + encodeURIComponent(symbol);
+                document.getElementById('symbol-preview-img').src = symbolUrl;
+                document.getElementById('symbol-preview-img').style.display = 'inline';
+            } else {
+                document.getElementById('symbol-preview-img').style.display = 'none';
+            }
+
+            // (Removed JSON history population code)
+
+            // Populate markers from localStorage
+            var allLoadedLatLngs = [];
+            for (var station in storedMarkers) {
+                if (storedMarkers.hasOwnProperty(station)) {
+                    var data = storedMarkers[station];
+                    var customIcon = L.icon({
+                        iconUrl: `https://lora-aprs.live/api/symbol?symbol=${encodeURIComponent(data.symbol_table + data.symbol)}`,
+                        iconSize: [40, 40],
+                        iconAnchor: [20, 20],
+                        popupAnchor: [0, -20]
+                    });
+                    var marker = L.marker([data.latitude, data.longitude], {icon: customIcon}).addTo(map);
+                    marker.bindTooltip(station, {
+                        permanent: true,
+                        direction: "bottom",
+                        offset: [0, 10],
+                        className: "station-label"
+                    });
+                    markers[station] = {
+                        marker: marker,
+                        path: data.path ? data.path.map(pt => L.latLng(pt.lat, pt.lng)) : [],
+                        polyline: null,
+                        timestamp: data.timestamp,
+                        dots: [],
+                        to: data.to || "",
+                        pathInfo: data.pathInfo || [],
+                        comment: data.comment || "",
+                        status: data.status || "",
+                        rawPackets: []
+                    };
+                    allLoadedLatLngs.push([data.latitude, data.longitude]);
+
+                    if (showPathsCheckbox.checked && markers[station].path.length > 0) {
+                        var polyline = L.polyline(markers[station].path, {
+                            color: getColorForStation(station),
+                            weight: 5
+                        }).addTo(map);
+                        markers[station].polyline = polyline;
+                        markers[station].dots = markers[station].path.map(pt => L.circleMarker(pt, {
+                            radius: 5,
+                            color: getColorForStation(station),
+                            fillColor: getColorForStation(station),
+                            fillOpacity: 1,
+                            weight: 0
+                        }).addTo(map));
+                        markers[station].path.forEach(pt => {
+                            allLoadedLatLngs.push([pt.lat, pt.lng]);
+                        });
+                    }
+                    rebuildPopup(station);
+                }
+            }
+
+            if (allLoadedLatLngs.length > 0 && autoZoomCheckbox.checked) {
+                if (allLoadedLatLngs.length === 1) {
+                    map.setView(allLoadedLatLngs[0], 13);
+                } else {
+                    var bounds = L.latLngBounds(allLoadedLatLngs);
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+            }
         }
-    }
 
-    // After loading all markers, perform fitBounds if applicable
-    if (allLoadedLatLngs.length > 0 && autoZoomCheckbox.checked) {
-        if (allLoadedLatLngs.length === 1) {
-            map.setView(allLoadedLatLngs[0], 13); // Set to a reasonable zoom level
-        } else {
-            var bounds = L.latLngBounds(allLoadedLatLngs);
-            map.fitBounds(bounds, { padding: [50, 50] }); // Add padding as needed
-        }
-    }
-}
-
-
-        // Call loadSavedData after the script is loaded
         loadSavedData();
 
         socket.on('connect', function() {
@@ -790,32 +714,25 @@ function loadSavedData() {
 
         socket.on('aprs_packet', function(data) {
             var station = String(data.from || "").trim().toUpperCase();
-
-            // Parse packet timestamp
             var packetDate = new Date(data.timestamp);
             if (!isNaN(packetDate)) {
                 packetTimestamps.push(packetDate.getTime());
                 lastPacketTimestamp = packetDate;
-                // Keep only the last 100 timestamps to prevent memory issues
                 if (packetTimestamps.length > 100) {
                     packetTimestamps.shift();
                 }
             }
 
-            // Check if it's a new station
             var isNewStation = !markers[station] || !markers[station].marker;
             if (isNewStation) {
-	      if (station) {
-                lastAddedMarker = {
-                    callsign: station,
-                    timestamp: packetDate
-                };
-               }
+                if (station) {
+                    lastAddedMarker = {
+                        callsign: station,
+                        timestamp: packetDate
+                    };
+                }
             }
 
-            // Existing APRS packet handling logic...
-
-            // Ensure we have a markers entry for this station
             if (!markers[station]) {
                 markers[station] = {
                     marker: null,
@@ -827,10 +744,9 @@ function loadSavedData() {
                     pathInfo: [],
                     comment: "",
                     status: "",
-                    rawPackets: [] // store all raw packets here
+                    rawPackets: []
                 };
             }
-            // Make sure rawPackets array exists, then push this new data
             if (!markers[station].rawPackets) {
                 markers[station].rawPackets = [];
             }
@@ -859,12 +775,9 @@ function loadSavedData() {
 
             logJsonPayload(data, data.timestamp);
 
-            // Update or create the marker if we have lat/long and symbol data
             if (data.latitude && data.longitude && data.symbol && data.symbol_table) {
                 updateOrCreateMarker(data);
-            } 
-            // Or if it's a status update with no lat/long
-            else if (station && data.status) {
+            } else if (station && data.status) {
                 if (markers[station]) {
                     markers[station].timestamp = data.timestamp;
                     markers[station].status = data.status;
@@ -877,18 +790,15 @@ function loadSavedData() {
         // Statistics Logic
         // ----------------------------------------------------------------------------
 
-        // Variables to track statistics
-        var packetTimestamps = []; // Stores timestamps of received packets
-        var lastPacketTimestamp = null; // Timestamp of the last received packet
-        var lastAddedMarker = null; // { callsign: String, timestamp: Date }
+        var packetTimestamps = [];
+        var lastPacketTimestamp = null;
+        var lastAddedMarker = null;
 
-        // Statistics DOM elements
         var statNumStations = document.getElementById('stat-num-stations');
         var statLastMarker = document.getElementById('stat-last-marker');
         var statLastPacket = document.getElementById('stat-last-packet');
         var statAvgPacketTime = document.getElementById('stat-avg-packet-time');
 
-        // Function to format time difference as "Xh Ym Zs ago"
         function formatTimeAgo(timestamp) {
             var now = new Date();
             var then = new Date(timestamp);
@@ -905,7 +815,6 @@ function loadSavedData() {
             return parts.join(" ");
         }
 
-        // Function to calculate average time between packets
         function calculateAveragePacketTime() {
             if (packetTimestamps.length < 2) return "N/A";
             var totalDiff = 0;
@@ -925,39 +834,26 @@ function loadSavedData() {
             return parts.join(" ");
         }
 
-        // Function to update statistics in the DOM
-// Function to update statistics in the DOM
-function updateStatistics() {
-    // 1. Number of Stations - Updated to count only active markers
-    var numStations = Object.values(markers).filter(m => m.marker).length;
-    statNumStations.textContent = "Stations: " + numStations;
+        function updateStatistics() {
+            var numStations = Object.values(markers).filter(m => m.marker).length;
+            statNumStations.textContent = "Stations: " + numStations;
+            if (lastAddedMarker) {
+                var timeAgo = formatTimeAgo(lastAddedMarker.timestamp);
+                statLastMarker.textContent = "Latest: " + lastAddedMarker.callsign + " (" + timeAgo + " ago)";
+            } else {
+                statLastMarker.textContent = "Latest: N/A";
+            }
+            if (lastPacketTimestamp) {
+                var timeSinceLast = formatTimeAgo(lastPacketTimestamp);
+                statLastPacket.textContent = "Last Pkt: " + timeSinceLast + " ago";
+            } else {
+                statLastPacket.textContent = "Last Pkt: N/A";
+            }
+            var avgTime = calculateAveragePacketTime();
+            statAvgPacketTime.textContent = "Pkt Avg: " + avgTime;
+        }
 
-    // 2. Last Added Marker - Updated to reflect the most recent packet
-    if (lastAddedMarker) {
-        var timeAgo = formatTimeAgo(lastAddedMarker.timestamp);
-        statLastMarker.textContent = "Latest: " + lastAddedMarker.callsign + " (" + timeAgo + " ago)";
-    } else {
-        statLastMarker.textContent = "Latest: N/A";
-    }
-
-    // 3. Time Since Last Packet Received
-    if (lastPacketTimestamp) {
-        var timeSinceLast = formatTimeAgo(lastPacketTimestamp);
-        statLastPacket.textContent = "Last Pkt: " + timeSinceLast + " ago";
-    } else {
-        statLastPacket.textContent = "Last Pkt: N/A";
-    }
-
-    // 4. Average Time Between Packets Received
-    var avgTime = calculateAveragePacketTime();
-    statAvgPacketTime.textContent = "Pkt Avg: " + avgTime;
-}
-
-
-        // Initialize statistics
         updateStatistics();
-
-        // Update statistics periodically (every second)
         setInterval(updateStatistics, 1000);
 
         function updateOrCreateMarker(data) {
@@ -977,7 +873,6 @@ function updateStatistics() {
             var currentLatLng = L.latLng(lat, lng);
 
             if (markers[station].marker) {
-                // Existing station => update
                 markers[station].marker.setLatLng(currentLatLng);
                 markers[station].marker.setIcon(customIcon);
                 markers[station].path.push(currentLatLng);
@@ -1011,7 +906,6 @@ function updateStatistics() {
                 if (data.comment !== undefined) markers[station].comment = data.comment;
                 rebuildPopup(station);
             } else {
-                // New station => create new marker
                 var marker = L.marker(currentLatLng, {icon: customIcon}).addTo(map);
                 marker.bindTooltip(station, {
                     permanent: true,
@@ -1041,7 +935,6 @@ function updateStatistics() {
                     dots.push(initialDot);
                 }
 
-                // Save to markers
                 markers[station].marker = marker;
                 markers[station].path = pathPoints;
                 markers[station].polyline = polyline;
@@ -1054,15 +947,11 @@ function updateStatistics() {
 
                 rebuildPopup(station);
 
-                // -------------------------
-                // Send the browser notification here for NEW station
-                // -------------------------
                 if ('Notification' in window && Notification.permission === 'granted') {
                     new Notification(`Station Spotted: ${station}`);
                 }
             }
 
-            // Update storedMarkers and save to localStorage
             storedMarkers[station] = {
                 from: station,
                 latitude: lat,
@@ -1095,8 +984,7 @@ function updateStatistics() {
             if (m.comment) popupContent += `<div><strong>Comment:</strong> ${escapeHtml(m.comment)}</div>`;
             if (m.status) popupContent += `<div><strong>Status:</strong> ${escapeHtml(m.status)}</div>`;
 
-            // Link to view raw data and messages for this station
-	    const stationTrimmed = station.replace(/-.*/, "");
+            const stationTrimmed = station.replace(/-.*/, "");
             popupContent += `
                 <div>
                     <a href="#" class="view-raw-link" onclick="viewRawData('${escapeHtml(station)}')">
@@ -1106,14 +994,14 @@ function updateStatistics() {
                     <a href="/static/messages.html?conversation=${encodeURIComponent(station)}" class="send-message" target="rightFrame">
                         Messages
                     </a>
-		    |
-		    <a href="https://www.qrz.com/db/${encodeURIComponent(stationTrimmed)}" 
-		       class="qrz-link" 
-		       target="_blank">
-		      QRZ
-		    </a>
-		    |
-		    <a href="https://aprs.fi/info/a/${encodeURIComponent(station)}" 
+                    |
+                    <a href="https://www.qrz.com/db/${encodeURIComponent(stationTrimmed)}" 
+                       class="qrz-link" 
+                       target="_blank">
+                      QRZ
+                    </a>
+                    |
+                    <a href="https://aprs.fi/info/a/${encodeURIComponent(station)}" 
                        class="aprsfi-link" 
                        target="_blank">
                       aprs.fi
@@ -1124,45 +1012,14 @@ function updateStatistics() {
             m.marker.bindPopup(popupContent);
         }
 
+        // Modified logJsonPayload: now only updates localStorage for history.
         function logJsonPayload(data, timestamp) {
-            var entryDiv = document.createElement('div');
-            entryDiv.className = 'json-entry';
-
-            var localTimeStr = formatLocalTime(timestamp);
-            var timestampEl = document.createElement('div');
-            timestampEl.className = 'timestamp';
-            timestampEl.textContent = `Received at: ${localTimeStr}`;
-
-            var preEl = document.createElement('pre');
-            preEl.textContent = JSON.stringify(data, null, 2);
-
-            entryDiv.appendChild(timestampEl);
-            entryDiv.appendChild(preEl);
-
-            // Insert at top
-            if (jsonEntries.firstChild) {
-                jsonEntries.insertBefore(entryDiv, jsonEntries.firstChild);
-            } else {
-                jsonEntries.appendChild(entryDiv);
-            }
-
-            // auto-open if not closed by user
-            if (!jsonBoxClosedManually && jsonBox.style.display !== 'block') {
-                jsonBox.style.display = 'block';
-            }
-
-            // Manage JSON history with max 250 entries
             var jsonHistory = JSON.parse(localStorage.getItem('jsonHistory') || '[]');
             jsonHistory.push({ data: data, timestamp: timestamp });
             if (jsonHistory.length > 250) {
                 jsonHistory.shift();
             }
             localStorage.setItem('jsonHistory', JSON.stringify(jsonHistory));
-
-            // limit to 250 entries in the display
-            while (jsonEntries.children.length > 250) {
-                jsonEntries.removeChild(jsonEntries.lastChild);
-            }
         }
 
         function formatLocalTime(ts) {
@@ -1196,7 +1053,6 @@ function updateStatistics() {
             if (!markers[stationName] || !markers[stationName].rawPackets) {
                 rawContent.textContent = 'No raw data found for ' + stationName;
             } else {
-                // Make a reversed copy of the rawPackets array
                 var packetsArray = markers[stationName].rawPackets.slice().reverse();
                 rawContent.textContent = JSON.stringify(packetsArray, null, 2);
             }
@@ -1211,17 +1067,10 @@ function updateStatistics() {
         });
 
         // ----------------------------------------------------------------------------
-        // JSON box show/hide
+        // Remove old JSON overlay event listeners and add new Packets button logic.
         // ----------------------------------------------------------------------------
-        document.querySelector('#json-payload-box .close-btn').addEventListener('click', function() {
-            jsonBox.style.display = 'none';
-            document.getElementById('json-reopen-marker').style.display = 'block';
-            jsonBoxClosedManually = true;
-        });
         document.getElementById('json-reopen-marker').addEventListener('click', function() {
-            jsonBox.style.display = 'block';
-            this.style.display = 'none';
-            jsonBoxClosedManually = false;
+            window.open('/static/packets.html', 'packetsWindow', 'width=400,height=800,resizable=yes');
         });
 
         // ----------------------------------------------------------------------------
@@ -1296,7 +1145,6 @@ function updateStatistics() {
                 userMarker.setLatLng([lat, lng]);
                 map.setView([lat, lng], 13);
 
-                // If location changed, auto-send a new location
                 if (lastBrowserLat !== null && lastBrowserLng !== null) {
                     if (lat !== lastBrowserLat || lng !== lastBrowserLng) {
                         var c = document.getElementById('callsign-input').value.trim();
@@ -1369,7 +1217,6 @@ function updateStatistics() {
                         console.error("Beacon error:", err);
                     });
                 }
-                // Update symbol preview
                 if (symbolVal && symbolVal.length === 2) {
                     var symbolUrl = 'https://lora-aprs.live/api/symbol?symbol=' + encodeURIComponent(symbolVal);
                     var previewImg = document.getElementById('symbol-preview-img');
@@ -1379,7 +1226,6 @@ function updateStatistics() {
                     document.getElementById('symbol-preview-img').style.display = 'none';
                 }
 
-                // Store input values to localStorage
                 localStorage.setItem('callsign', callsignVal);
                 localStorage.setItem('comment', commentVal);
                 localStorage.setItem('status', statusVal);
@@ -1482,7 +1328,6 @@ function updateStatistics() {
             channelLabel.textContent = `Channel ${channel.channel} (${capitalizeFirstLetter(channel.type)})`;
             channelDiv.appendChild(channelLabel);
 
-            // Parameter
             var parameterLabel = document.createElement('label');
             parameterLabel.textContent = 'Parameter: ';
             var parameterInput = document.createElement('input');
@@ -1493,7 +1338,6 @@ function updateStatistics() {
             parameterLabel.appendChild(parameterInput);
             channelDiv.appendChild(parameterLabel);
 
-            // Unit
             var unitLabel = document.createElement('label');
             unitLabel.textContent = 'Unit: ';
             var unitInput = document.createElement('input');
@@ -1504,7 +1348,6 @@ function updateStatistics() {
             unitLabel.appendChild(unitInput);
             channelDiv.appendChild(unitLabel);
 
-            // Value
             var valueLabel = document.createElement('label');
             valueLabel.textContent = 'Value: ';
             var valueInput = document.createElement('input');
@@ -1522,14 +1365,12 @@ function updateStatistics() {
             valueLabel.appendChild(valueInput);
             channelDiv.appendChild(valueLabel);
 
-            // Delete button
             var deleteBtn = document.createElement('button');
             deleteBtn.className = 'delete-channel-btn';
             deleteBtn.innerHTML = '&times;';
             deleteBtn.title = 'Delete Channel';
             channelDiv.appendChild(deleteBtn);
 
-            // If analogue => EQNS
             if (channel.type === 'analogue') {
                 var eqnsContainer = document.createElement('div');
                 eqnsContainer.className = 'eqns-container';
@@ -1579,7 +1420,6 @@ function updateStatistics() {
                 });
             }
 
-            // MQTT UI
             var mqttEnabled = (channel.mqtt === true);
             var mqttRetained = (channel.mqtt_retained === true);
 
@@ -1621,7 +1461,6 @@ function updateStatistics() {
             cmdTopicLabel.appendChild(cmdTopicInput);
             mqttDetailsDiv.appendChild(cmdTopicLabel);
 
-            // Retain row
             var retainRow = document.createElement('div');
             retainRow.className = 'retain-row';
             var retainCheckbox = document.createElement('input');
@@ -1767,7 +1606,6 @@ function updateStatistics() {
                     value: finalVal
                 };
 
-                // If analogue, gather EQNS
                 if (chType === 'analogue') {
                     var eqnsA = chDiv.querySelector(`input[name="eqns_a_${chanNum}"]`).value.trim();
                     var eqnsB = chDiv.querySelector(`input[name="eqns_b_${chanNum}"]`).value.trim();
@@ -1785,7 +1623,6 @@ function updateStatistics() {
                     }
                 }
 
-                // MQTT
                 var mqttCheckbox = chDiv.querySelector(`input[name="mqtt_${chanNum}"]`);
                 if (mqttCheckbox) {
                     chData.mqtt = mqttCheckbox.checked;
@@ -1864,7 +1701,6 @@ function updateStatistics() {
             return str.charAt(0).toUpperCase() + str.slice(1);
         }
 
-        // Channel add logic
         function countExistingChannels() {
             var channels = telemetryChannelsContainer.querySelectorAll('.telemetry-channel');
             var counts = { analogue: 0, digital: 0 };
@@ -1954,16 +1790,11 @@ function updateStatistics() {
         var clearBtn = document.getElementById('clear-btn');
         clearBtn.addEventListener('click', function() {
             if (confirm("Are you sure you want to clear all markers and JSON history? This will not affect your callsign, comment, status, or symbol.")) {
-                // Remove specific items from localStorage
                 localStorage.removeItem('markers');
                 localStorage.removeItem('jsonHistory');
 
-                // Clear JSON history from UI
-                jsonEntries.innerHTML = '';
-                jsonBox.style.display = 'none';
-                document.getElementById('json-reopen-marker').style.display = 'block';
+                // (Removed JSON history clearing from UI as the overlay is gone)
 
-                // Remove all markers from map
                 for (var st in markers) {
                     if (markers.hasOwnProperty(st)) {
                         if (markers[st].marker) map.removeLayer(markers[st].marker);
@@ -1974,7 +1805,6 @@ function updateStatistics() {
                 markers = {};
                 storedMarkers = {};
 
-                // Optionally, reset the map view
                 map.setView([0, 0], 2);
             }
         });
@@ -1985,26 +1815,20 @@ function updateStatistics() {
         var resetBtn = document.getElementById('reset-btn');
         resetBtn.addEventListener('click', function() {
             if (confirm("Are you sure you want to reset all data? This will remove all markers, JSON history, and stored settings for this page.")) {
-                // List of keys to remove (page-specific)
                 var keysToRemove = ['markers', 'jsonHistory', 'callsign', 'comment', 'status', 'symbol'];
 
                 keysToRemove.forEach(function(key) {
                     localStorage.removeItem(key);
                 });
 
-                // Clear input fields
                 document.getElementById('callsign-input').value = '';
                 document.getElementById('comment-input').value = '';
                 document.getElementById('status-input').value = '';
                 document.getElementById('symbol-input').value = '';
                 document.getElementById('symbol-preview-img').style.display = 'none';
 
-                // Clear JSON history from UI
-                jsonEntries.innerHTML = '';
-                jsonBox.style.display = 'none';
-                document.getElementById('json-reopen-marker').style.display = 'block';
+                // (Removed JSON history clearing from UI)
 
-                // Remove all markers from map
                 for (var st in markers) {
                     if (markers.hasOwnProperty(st)) {
                         if (markers[st].marker) map.removeLayer(markers[st].marker);
@@ -2015,7 +1839,6 @@ function updateStatistics() {
                 markers = {};
                 storedMarkers = {};
 
-                // Optionally, reset the map view
                 map.setView([0, 0], 2);
             }
         });
