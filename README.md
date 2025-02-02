@@ -20,6 +20,7 @@ The telemetry manager handles all 13 channels and takes care of sequence, unit a
 
 ![map](images/map-messages.png)
 
+![packets](images/packets.png)
 
 ![digi](images/digital-telemetry.png)
 
