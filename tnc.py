@@ -174,7 +174,7 @@ DEFAULT_SETTINGS = {
     'no_log': False,
     'send': None,
     'debug': False,
-    'delay': DEFAULT_SEND_DELAY_MS,
+    'delay': 1000,
     'mqtt_host': '127.0.0.1',
     'mqtt_port': 1883,
     'mqtt_tls': False,
