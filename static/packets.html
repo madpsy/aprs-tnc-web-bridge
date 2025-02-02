@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>APRS Packets</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Socket.IO -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
+  <!-- CryptoJS for hashing (used for generating stable packet details IDs) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+<body>
+  <div class="container my-4">
+    <!-- New header row: Filter input on left, Status in center, Clear button on right -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div style="flex: 0 0 auto; margin-right: 10px;">
+        <input type="text" id="callsignFilter" class="form-control" placeholder="Filter from..." size="12" maxlength="10" style="width: auto;">
+      </div>
+      <div>
+        Connected: <span id="connectionStatusDot" style="width:10px; height:10px; border-radius:50%; background-color:red; display:inline-block;"></span>
+      </div>
+      <div>
+        <button id="clearButton" class="btn btn-danger">Clear</button>
+      </div>
+    </div>
+
+    <!-- Container for messages -->
+    <div id="conversations" class="mt-3"></div>
+  </div>
+
+  <script>
+    // Global object to store packets grouped by 'from' then by 'to'
+    let conversations = {};
+
+    // Global objects to persist expanded states across re-renderings.
+    let persistedExpandedStates = {};
+    let persistedPacketDetailsStates = {};
+
+    /**
+     * Helper function to recursively render nested objects and arrays.
+     * - Objects are rendered as a definition list (<dl>).
+     * - Arrays are rendered as a Bootstrap list group.
+     * Primitive values are returned as-is.
+     */
+    function renderNested(value) {
+      if (typeof value !== 'object' || value === null) {
+        return value;
+      } else if (Array.isArray(value)) {
+        let html = '<ul class="list-group">';
+        value.forEach(item => {
+          html += `<li class="list-group-item">${renderNested(item)}</li>`;
+        });
+        html += '</ul>';
+        return html;
+      } else {
+        let html = '<dl class="row">';
+        for (const key in value) {
+          if (value.hasOwnProperty(key)) {
+            html += `<dt class="col-sm-4">${key}</dt><dd class="col-sm-8">${renderNested(value[key])}</dd>`;
+          }
+        }
+        html += '</dl>';
+        return html;
+      }
+    }
+
+    /**
+     * Renders all JSON fields of a packet.
+     * For the "path" field, if present, it displays the array elements
+     * joined with right arrows as plain text.
+     * For nested JSON, it calls renderNested() for a nicely formatted display.
+     */
+    function renderPacketDetails(packet) {
+      let html = '<dl class="row">';
+      for (const key in packet) {
+        if (packet.hasOwnProperty(key)) {
+          let value = packet[key];
+          html += `<dt class="col-sm-3">${key}</dt><dd class="col-sm-9">`;
+          if (key === "path" && Array.isArray(value)) {
+            html += value.join(' &rarr; ');
+          } else if (typeof value === 'object' && value !== null) {
+            html += renderNested(value);
+          } else {
+            html += value;
+          }
+          html += '</dd>';
+        }
+      }
+      html += '</dl>';
+      return html;
+    }
+
+    /**
+     * Fetches the symbol (icon) for a given callsign if not already stored.
+     */
+    function fetchSymbolIfNeeded(callsign) {
+      const key = `symbolImage_${callsign}`;
+      if (localStorage.getItem(key)) {
+        console.log(`Symbol for ${callsign} already in localStorage`);
+        return;
+      }
+      console.log(`Fetching symbol for ${callsign}...`);
+      fetch(`https://lora-aprs.live/api/symbol?callsign=${encodeURIComponent(callsign)}`)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`Symbol not found or status=${response.status}`);
+          }
+          return response.blob();
+        })
+        .then(blob => new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        }))
+        .then(dataUrl => {
+          localStorage.setItem(key, dataUrl);
+          console.log(`Symbol stored for ${callsign}`);
+          loadConversations();
+        })
+        .catch(err => {
+          console.log(`No symbol for ${callsign}, or error:`, err);
+        });
+    }
+
+    /**
+     * Renders the conversations into the #conversations container.
+     * Persists the current expanded state for each outer callsign panel and
+     * each packet’s details panel, then re-renders the conversation list
+     * with the outer 'from' callsigns sorted alphanumerically and filtered
+     * based on the callsign filter input.
+     */
+    function loadConversations() {
+      const container = document.getElementById('conversations');
+      
+      // Before clearing, update persisted states from current DOM.
+      document.querySelectorAll('[id^="collapse-"]').forEach(el => {
+        const key = el.id.replace("collapse-", "");
+        persistedExpandedStates[key] = el.classList.contains('show');
+      });
+      document.querySelectorAll('[id^="packet-details-"]').forEach(el => {
+        persistedPacketDetailsStates[el.id] = el.classList.contains('show');
+      });
+
+      container.innerHTML = '';
+
+      // If no packets have been received, display waiting message.
+      if (Object.keys(conversations).length === 0) {
+        container.innerHTML = '<div class="alert alert-info">Waiting for first packet...</div>';
+        return;
+      }
+
+      // Get filter value (case-insensitive)
+      const filterValue = document.getElementById("callsignFilter").value.toLowerCase();
+
+      // Only show 'from' callsigns that match the filter.
+      Object.keys(conversations)
+        .filter(callsign => callsign.toLowerCase().includes(filterValue))
+        .sort((a, b) => a.localeCompare(b))
+        .forEach((fromCallsign) => {
+          const callsignData = conversations[fromCallsign];
+          const collapseId = `collapse-${fromCallsign}`;
+
+          // Create card element.
+          const card = document.createElement('div');
+          card.className = 'card mb-3';
+
+          // Create card header with two parts: left (toggle) and right (external links).
+          const cardHeader = document.createElement('div');
+          cardHeader.className = 'card-header d-flex justify-content-between align-items-center';
+
+          // Left (toggle) area.
+          const toggleDiv = document.createElement('div');
+          toggleDiv.style.cursor = 'pointer';
+          toggleDiv.setAttribute('data-bs-toggle', 'collapse');
+          toggleDiv.setAttribute('data-bs-target', `#${collapseId}`);
+          toggleDiv.setAttribute('aria-expanded', persistedExpandedStates[fromCallsign] ? 'true' : 'false');
+          toggleDiv.setAttribute('aria-controls', collapseId);
+
+          const symbolKey = `symbolImage_${fromCallsign}`;
+          let imgHTML = '';
+          const storedSymbol = localStorage.getItem(symbolKey);
+          if (storedSymbol) {
+            imgHTML = `<img src="${storedSymbol}" alt="${fromCallsign}" style="width:20px;height:20px;margin-right:10px;">`;
+          } else {
+            imgHTML = `<span class="badge bg-secondary me-2">?</span>`;
+          }
+          toggleDiv.innerHTML = imgHTML + fromCallsign;
+
+          // Right (external links) area.
+          const externalDiv = document.createElement('div');
+          // Check if any packet from this callsign has symbol=='a' and symbol_table=='L'
+          let hasLora = false;
+          for (let toAddr in callsignData) {
+            if (callsignData.hasOwnProperty(toAddr)) {
+              for (let packet of callsignData[toAddr]) {
+                if (packet.symbol === 'a' && packet.symbol_table === 'L') {
+                  hasLora = true;
+                  break;
+                }
+              }
+              if (hasLora) break;
+            }
+          }
+          let loraliveLink = "";
+          if (hasLora) {
+            loraliveLink = `<a href="https://lora-aprs.live/igate.html?rx_callsign=${fromCallsign}&time_period=1440" 
+                              target="_blank" style="text-decoration: none;" 
+                              onclick="event.stopPropagation(); event.stopImmediatePropagation();">
+                              <img src="/static/loralive.ico" alt="LoRa Live" style="width:20px;height:20px;margin-left:5px;">
+                             </a>`;
+          }
+          const aprsLink = `<a href="https://aprs.fi/info/a/${fromCallsign}" target="_blank" style="text-decoration: none;" 
+                               onclick="event.stopPropagation(); event.stopImmediatePropagation();">
+                              <img src="/static/aprsfi.ico" alt="aprs.fi" style="width:20px;height:20px;margin-left:5px;">
+                             </a>`;
+          const qrzCallsign = fromCallsign.split('-')[0];
+          const qrzLink = `<a href="https://www.qrz.com/db/${qrzCallsign}" target="_blank" style="text-decoration: none;" 
+                              onclick="event.stopPropagation(); event.stopImmediatePropagation();">
+                              <img src="/static/qrzcom.ico" alt="QRZ.com" style="width:20px;height:20px;margin-left:5px;">
+                             </a>`;
+          externalDiv.innerHTML = loraliveLink + aprsLink + qrzLink;
+
+          cardHeader.appendChild(toggleDiv);
+          cardHeader.appendChild(externalDiv);
+          card.appendChild(cardHeader);
+
+          // Create collapsible card body to show packets.
+          const collapseDiv = document.createElement('div');
+          collapseDiv.className = persistedExpandedStates[fromCallsign] ? 'collapse show' : 'collapse';
+          collapseDiv.id = collapseId;
+
+          const cardBody = document.createElement('div');
+          cardBody.className = 'card-body';
+
+          // Group messages by 'to'
+          Object.keys(callsignData).forEach(toAddr => {
+            const toHeader = document.createElement('h5');
+            toHeader.textContent = `To: ${toAddr}`;
+            cardBody.appendChild(toHeader);
+
+            const listGroup = document.createElement('ul');
+            listGroup.className = 'list-group mb-3';
+
+            // Loop through each packet.
+            callsignData[toAddr].forEach((packet) => {
+              const li = document.createElement('li');
+              li.className = 'list-group-item';
+
+              // Compute message text using text, then status, then comment.
+              const packetText = packet.text || packet.status || packet.comment || "";
+              let pathLine = "";
+              if (packet.path && packet.path.length > 0) {
+                pathLine = `<br><small class="text-muted">${packet.path.join(' &rarr; ')}</small>`;
+              }
+              // Generate a stable ID for this packet's details panel.
+              const detailsId = 'packet-details-' + CryptoJS.SHA256(packet.raw).toString();
+              const detailsExpanded = persistedPacketDetailsStates[detailsId] || false;
+
+              // If the packet has latitude and longitude, add a Google Maps link.
+              let gmapsLink = "";
+              if (packet.latitude && packet.longitude) {
+                gmapsLink = `<a href="https://www.google.com/maps?q=${packet.latitude},${packet.longitude}" target="_blank" style="text-decoration: none;">
+                                <img src="/static/gmaps.png" alt="Google Maps" style="width:20px;height:20px;">
+                              </a>`;
+              }
+
+              li.innerHTML = `
+                <div>
+                  <strong>${packet.timestamp}</strong> - ${packetText}${pathLine}
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                  <button class="btn btn-sm btn-link" type="button" data-bs-toggle="collapse" data-bs-target="#${detailsId}" aria-expanded="${detailsExpanded ? 'true' : 'false'}" aria-controls="${detailsId}">
+                    Show Details
+                  </button>
+                  ${gmapsLink}
+                </div>
+                <div class="${detailsExpanded ? 'collapse show' : 'collapse'}" id="${detailsId}">
+                  <div class="card card-body">
+                    ${renderPacketDetails(packet)}
+                  </div>
+                </div>
+              `;
+              listGroup.appendChild(li);
+            });
+            cardBody.appendChild(listGroup);
+          });
+
+          collapseDiv.appendChild(cardBody);
+          card.appendChild(collapseDiv);
+          container.appendChild(card);
+        });
+    }
+
+    // Connect to the local Socket.IO server (same origin)
+    const socket = io('/');
+
+    socket.onAny((event, ...args) => {
+      console.log('Socket event:', event, args);
+    });
+
+    const connectionStatusDot = document.getElementById('connectionStatusDot');
+    socket.on('connect', () => {
+      console.log(`Connected to Socket.IO server with ID: ${socket.id}`);
+      connectionStatusDot.style.backgroundColor = 'green';
+    });
+    socket.on('disconnect', (reason) => {
+      console.log(`Disconnected. Reason: ${reason}`);
+      connectionStatusDot.style.backgroundColor = 'red';
+    });
+    socket.on('connect_error', (error) => {
+      console.error('Connection error:', error);
+      connectionStatusDot.style.backgroundColor = 'red';
+    });
+
+    /**
+     * Processes a single packet by grouping it under its 'from' and 'to' fields.
+     */
+    function processPacket(packet) {
+      if (!packet.from || !packet.to) {
+        console.warn("Packet missing required fields:", packet);
+        return;
+      }
+      fetchSymbolIfNeeded(packet.from);
+      if (!conversations[packet.from]) {
+        conversations[packet.from] = {};
+      }
+      if (!conversations[packet.from][packet.to]) {
+        conversations[packet.from][packet.to] = [];
+      }
+      conversations[packet.from][packet.to].push(packet);
+    }
+
+    socket.on('aprs_packet', (data) => {
+      console.log('Received "aprs_packet" event:', data);
+      if (Array.isArray(data)) {
+        data.forEach(packet => processPacket(packet));
+      } else {
+        processPacket(data);
+      }
+      loadConversations();
+    });
+
+    document.getElementById('clearButton').addEventListener('click', () => {
+      conversations = {};
+      loadConversations();
+    });
+
+    // Refresh display on filter input change.
+    document.getElementById('callsignFilter').addEventListener('input', loadConversations);
+
+    // Call loadConversations() on page load so the waiting message appears if no packets.
+    loadConversations();
+  </script>
+
+  <!-- Bootstrap JS (for collapse functionality) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
