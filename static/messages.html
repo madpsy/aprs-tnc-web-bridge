@@ -724,7 +724,7 @@ socket.on('connect_error', (error) => {
   function sendReceipt(receiptId, sender) {
     const receiptMessage = `ack${receiptId}`;
     const paddedTo = padCallsign(sender);
-    const rawReceiptPacket = `${currentUserCallsign}>APLRG1,WIDE1-1::${paddedTo}:${receiptMessage}`;
+    const rawReceiptPacket = `${currentUserCallsign}>APRS,WIDE1-1::${paddedTo}:${receiptMessage}`;
     console.log(`Sending receipt: ${rawReceiptPacket}`);
     fetch('/api/send/raw', {
       method: 'POST',
@@ -1230,7 +1230,7 @@ socket.on('connect_error', (error) => {
     const testMessageText = `?PING{${receiptId}`;
     const testRecipient = 'MM3NDH-13';
     const paddedTo = padCallsign(testRecipient);
-    const rawPacket = `${currentUserCallsign}>APLRG1,WIDE1-1::${paddedTo}:${testMessageText}`;
+    const rawPacket = `${currentUserCallsign}>APRS,WIDE1-1::${paddedTo}:${testMessageText}`;
     fetch('/api/send/raw', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1371,7 +1371,7 @@ socket.on('connect_error', (error) => {
       textToSend += `{${receiptId}`; // Append only open brace
     }
     const paddedTo = padCallsign(currentConversation);
-    const rawPacket = `${currentUserCallsign}>APLRG1,WIDE1-1::${paddedTo}:${textToSend}`;
+    const rawPacket = `${currentUserCallsign}>APRS,WIDE1-1::${paddedTo}:${textToSend}`;
     try {
       const response = await fetch('/api/send/raw', {
         method: 'POST',
