@@ -1612,7 +1612,7 @@ def send_location():
     except:
         return jsonify({"error":"lat/lon must be valid floats"}),400
 
-    to_call = data.get('to','APLRT1').upper()
+    to_call = data.get('to','APRS').upper()
     path_str = data.get('path','WIDE1-1').upper()
     symbol_table = data.get('symbol_table','/')
     symbol_char = data.get('symbol','L')
