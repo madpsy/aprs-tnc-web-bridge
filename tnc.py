@@ -187,6 +187,8 @@ DEFAULT_SETTINGS = {
     'aprs_host': 'rotate.aprs2.net',
     'aprs_port': 14580,
     'aprs_filter': 'm/100',
+    'aprs_to': 'APRS',
+    'aprs_path': 'WIDE1-1',
     'proxy_enabled': False,
     'proxy_port': 5002
 }
@@ -1121,7 +1123,9 @@ class TelemetryManager:
                 else:
                     param_list.append('')
             parm_str = ",".join(param_list)
-            return f"{from_call}>APRS,WIDE1-1::{from_call}:PARM.{parm_str}"
+            aprs_to   = config.get('aprs_to', 'APRS').upper()
+            aprs_path = config.get('aprs_path', 'WIDE1-1').upper()
+            return f"{from_call}>{aprs_to},{aprs_path}::{from_call}:PARM.{parm_str}"
 
     def construct_unit_message(self, from_call):
         with self.lock:
@@ -1136,7 +1140,9 @@ class TelemetryManager:
                 else:
                     unit_list.append('')
             unit_str = ",".join(unit_list)
-            return f"{from_call}>APRS,WIDE1-1::{from_call}:UNIT.{unit_str}"
+            aprs_to   = config.get('aprs_to', 'APRS').upper()
+            aprs_path = config.get('aprs_path', 'WIDE1-1').upper()
+            return f"{from_call}>{aprs_to},{aprs_path}::{from_call}:UNIT.{unit_str}"
 
     def construct_t_message(self, from_call):
         with self.lock:
@@ -1155,7 +1161,9 @@ class TelemetryManager:
                     else:
                         digits[ch-6] = val
             dig_str = ''.join(digits)
-            return f"{from_call}>APRS,WIDE1-1:T#{seq}," + ",".join(analogs) + "," + dig_str
+            aprs_to   = config.get('aprs_to', 'APRS').upper()
+            aprs_path = config.get('aprs_path', 'WIDE1-1').upper()
+            return f"{from_call}>{aprs_to},{aprs_path}:T#{seq}," + ",".join(analogs) + "," + dig_str
 
     def construct_eqns_message(self, from_call):
         with self.lock:
@@ -1170,7 +1178,9 @@ class TelemetryManager:
                 else:
                     eq_list.extend(['0','1','0'])
             eq_str = ",".join(eq_list)
-            return f"{from_call}>APRS,WIDE1-1::{from_call}:EQNS.{eq_str}"
+            aprs_to   = config.get('aprs_to', 'APRS').upper()
+            aprs_path = config.get('aprs_path', 'WIDE1-1').upper()
+            return f"{from_call}>{aprs_to},{aprs_path}::{from_call}:EQNS.{eq_str}"
 
     def mark_sent(self, from_call, changes):
         pass
@@ -1581,7 +1591,8 @@ def send_beacon():
     if not from_call or not status_str:
         return jsonify({"error":"'from' and 'status' must not be empty"}), 400
 
-    path_str = data.get("path", "WIDE1-1").upper()
+    default_path = config.get('aprs_path', 'WIDE1-1').upper()
+    path_str = data.get("path", default_path).upper()
     pkt = f"{from_call}>BEACON,{path_str}:>{status_str}"
     try:
         outgoing_aprs_queue.put(pkt)
@@ -1611,9 +1622,10 @@ def send_location():
         lon_val = float(data['longitude'])
     except:
         return jsonify({"error":"lat/lon must be valid floats"}),400
-
-    to_call = data.get('to','APRS').upper()
-    path_str = data.get('path','WIDE1-1').upper()
+    default_to   = config.get('aprs_to', 'APRS').upper()
+    default_path = config.get('aprs_path', 'WIDE1-1').upper()
+    to_call = data.get('to', default_to).upper()
+    path_str = data.get('path', default_path).upper()
     symbol_table = data.get('symbol_table','/')
     symbol_char = data.get('symbol','L')
 
