@@ -230,6 +230,23 @@
           }
         }
       });
+
+      // Update time ago for the Unknown card
+      const unknownElem = document.getElementById('timeago-unknown');
+      if (unknownElem) {
+        const locationOnly = document.getElementById("locationFilter").checked;
+        const filteredUnknown = unknownPackets.filter(packet => !locationOnly || (packet.latitude && packet.longitude));
+        let unknownLastTime = 0;
+        filteredUnknown.forEach(packet => {
+          if (packet.receivedAt && packet.receivedAt > unknownLastTime) {
+            unknownLastTime = packet.receivedAt;
+          }
+        });
+        if (unknownLastTime) {
+          const formatted = formatTimeAgoSingleUnit(unknownLastTime);
+          unknownElem.innerText = `(${formatted}, Packets: ${filteredUnknown.length})`;
+        }
+      }
     }
 
     /**
@@ -469,6 +486,7 @@
         container.appendChild(card);
       });
 
+      // Render the Unknown card.
       const filteredUnknown = unknownPackets.filter(packet => {
         return !locationOnly || (packet.latitude && packet.longitude);
       });
@@ -490,12 +508,12 @@
         unknownHeader.style.cursor = 'pointer';
         unknownHeader.setAttribute('data-bs-toggle', 'collapse');
         unknownHeader.setAttribute('data-bs-target', '#collapse-unknown');
-        unknownHeader.innerHTML = `Unknown <small class="text-muted">${unknownTimeAgo ? '(' + unknownTimeAgo + ', Packets: ' + unknownCount + ')' : '(Packets: ' + unknownCount + ')'}</small>`;
+        // Note the added id for the time ago element.
+        unknownHeader.innerHTML = `Unknown <small class="text-muted" id="timeago-unknown">${unknownTimeAgo ? '(' + unknownTimeAgo + ', Packets: ' + unknownCount + ')' : '(Packets: ' + unknownCount + ')'}</small>`;
         unknownCard.appendChild(unknownHeader);
 
         const collapseUnknown = document.createElement('div');
         collapseUnknown.id = 'collapse-unknown';
-        // Default to collapsed if no persisted state exists.
         collapseUnknown.className = (persistedExpandedStates.hasOwnProperty('unknown') ? (persistedExpandedStates['unknown'] ? 'collapse show' : 'collapse') : 'collapse');
 
         const unknownBody = document.createElement('div');
@@ -504,13 +522,17 @@
         const unknownList = document.createElement('ul');
         unknownList.className = 'list-group';
 
-        filteredUnknown.forEach(packet => {
-          const li = document.createElement('li');
-          li.className = 'list-group-item';
-          const receivedTime = new Date(packet.receivedAt).toLocaleString();
-          li.innerHTML = `<strong>${receivedTime}</strong> - ${packet.raw}`;
-          unknownList.appendChild(li);
-        });
+        // Sort unknown packets so the most recent are on top.
+        filteredUnknown
+          .slice()
+          .sort((a, b) => b.receivedAt - a.receivedAt)
+          .forEach(packet => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item';
+            const receivedTime = new Date(packet.receivedAt).toLocaleString();
+            li.innerHTML = `<strong>${receivedTime}</strong> - ${packet.raw}`;
+            unknownList.appendChild(li);
+          });
 
         unknownBody.appendChild(unknownList);
         collapseUnknown.appendChild(unknownBody);
