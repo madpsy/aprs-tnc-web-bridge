@@ -976,46 +976,53 @@
             }
         }
 
-        function rebuildPopup(station) {
-            var m = markers[station];
-            if (!m) return;
-            var localTimeStr = formatLocalTime(m.timestamp);
-            var popupContent = `<div><strong>Time:</strong> ${escapeHtml(localTimeStr)}</div>`;
-            popupContent += `<div><strong>From:</strong> ${escapeHtml(station)}</div>`;
-            if (m.to) popupContent += `<div><strong>To:</strong> ${escapeHtml(m.to)}</div>`;
-            if (m.pathInfo && m.pathInfo.length) {
-                popupContent += `<div><strong>Path:</strong> ${m.pathInfo.map(escapeHtml).join(' → ')}</div>`;
-            }
-            if (m.comment) popupContent += `<div><strong>Comment:</strong> ${escapeHtml(m.comment)}</div>`;
-            if (m.status) popupContent += `<div><strong>Status:</strong> ${escapeHtml(m.status)}</div>`;
+function rebuildPopup(station) {
+    var m = markers[station];
+    if (!m) return;
+    var localTimeStr = formatLocalTime(m.timestamp);
+    var popupContent = `<div><strong>Time:</strong> ${escapeHtml(localTimeStr)}</div>`;
+    popupContent += `<div><strong>From:</strong> ${escapeHtml(station)}</div>`;
+    if (m.to) popupContent += `<div><strong>To:</strong> ${escapeHtml(m.to)}</div>`;
+    if (m.pathInfo && m.pathInfo.length) {
+        popupContent += `<div><strong>Path:</strong> ${m.pathInfo.map(escapeHtml).join(' → ')}</div>`;
+    }
+    if (m.comment) popupContent += `<div><strong>Comment:</strong> ${escapeHtml(m.comment)}</div>`;
+    if (m.status) popupContent += `<div><strong>Status:</strong> ${escapeHtml(m.status)}</div>`;
 
-            const stationTrimmed = station.replace(/-.*/, "");
-            popupContent += `
-                <div>
-                    <a href="#" class="view-raw-link" onclick="viewRawData('${escapeHtml(station)}')">
-                        Packets
-                    </a>
-                    | 
-                    <a href="/static/messages.html?conversation=${encodeURIComponent(station)}" class="send-message" target="rightFrame">
-                        Messages
-                    </a>
-                    |
-                    <a href="https://www.qrz.com/db/${encodeURIComponent(stationTrimmed)}" 
-                       class="qrz-link" 
-                       target="_blank">
-                      QRZ
-                    </a>
-                    |
-                    <a href="https://aprs.fi/info/a/${encodeURIComponent(station)}" 
-                       class="aprsfi-link" 
-                       target="_blank">
-                      aprs.fi
-                    </a>
-                </div>
-            `;
+    const stationTrimmed = station.replace(/-.*/, "");
+    popupContent += `
+        <div>
+            <a href="#" class="view-raw-link" onclick="viewRawData('${escapeHtml(station)}')">
+                Packets
+            </a>
+            | 
+            <a href="/static/messages.html?conversation=${encodeURIComponent(station)}" class="send-message" target="rightFrame">
+                Messages
+            </a>
+            |
+            <a href="https://www.qrz.com/db/${encodeURIComponent(stationTrimmed)}" 
+               class="qrz-link" 
+               target="_blank">
+              QRZ
+            </a>
+            |
+            <a href="https://aprs.fi/info/a/${encodeURIComponent(station)}" 
+               class="aprsfi-link" 
+               target="_blank">
+              aprs.fi
+            </a>`;
 
-            m.marker.bindPopup(popupContent);
-        }
+    // Append the extra "LoRa" link if the 'To' field matches either value.
+    if (m.to === 'APLRG1') {
+        popupContent += ` | <a href="https://lora-aprs.live/igate.html?rx_callsign=${encodeURIComponent(station)}&time_period=1440" target="_blank" class="aprsfi-link">LoRa</a>`;
+    } else if (m.to === 'APLRT1') {
+        popupContent += ` | <a href="https://lora-aprs.live/track_multi.html?points=10&tx_callsign=${encodeURIComponent(station)}" target="_blank" class="aprsfi-link">LoRa</a>`;
+    }
+
+    popupContent += `</div>`;
+    m.marker.bindPopup(popupContent);
+}
+
 
         // Modified logJsonPayload: now only updates localStorage for history.
         function logJsonPayload(data, timestamp) {
