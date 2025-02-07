@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>File Transfer</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Socket.IO -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
+  <!-- CryptoJS for MD5 checksum -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <!-- Pako for compression/decompression -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+  <style>
+    body { padding: 20px; }
+    #status { margin-top: 1rem; font-weight: bold; }
+    .progress { height: 20px; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>File Transfer</h1>
+    
+    <!-- Settings: These values would normally be fetched from /api/settings -->
+    <div class="mb-3">
+      <label for="senderCallsign" class="form-label">Your Callsign</label>
+      <input type="text" id="senderCallsign" class="form-control" placeholder="Fetching your callsign...">
+    </div>
+    <div class="mb-3">
+      <label for="receiverCallsign" class="form-label">Receiver Callsign (for sending)</label>
+      <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
+    </div>
+    <div class="mb-3">
+      <label for="fileInput" class="form-label">File to Send</label>
+      <input type="file" id="fileInput" class="form-control">
+    </div>
+    <button id="sendFileBtn" class="btn btn-primary">Send File</button>
+    <!-- New Cancel Button (initially hidden) -->
+    <button id="cancelBtn" class="btn btn-secondary" style="display: none;">Cancel</button>
+    <div id="status"></div>
+    
+    <hr>
+    <h2>Sender Progress</h2>
+    <div id="senderProgress">
+      <p>No file being sent.</p>
+    </div>
+    
+    <hr>
+    <h2>Sent Files</h2>
+    <div id="sentFiles">
+      <p>No files sent yet.</p>
+    </div>
+    
+    <hr>
+    <h2>Receiver Progress</h2>
+    <div id="receiverProgress">
+      <p>No active transfers.</p>
+    </div>
+    
+    <hr>
+    <h2>Received Files</h2>
+    <div id="receivedFiles">
+      <p>No files received yet.</p>
+    </div>
+  </div>
+  
+  <!-- Bootstrap Bundle -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+
+      // Fetch settings from /api/settings to pre-populate your callsign.
+      fetch('/api/settings')
+        .then(response => response.json())
+        .then(settings => {
+          document.getElementById('senderCallsign').value = settings.my_callsign;
+        })
+        .catch(error => {
+          console.error("Error fetching settings:", error);
+        });
+
+      /**********************************************************************
+       * Global Utility Functions
+       **********************************************************************/
+      function padCallsign(cs) {
+        return cs.toUpperCase().padEnd(9, ' ');
+      }
+      
+      function crc16(buf) {
+        let crc = 0xFFFF;
+        for (let i = 0; i < buf.length; i++) {
+          crc ^= buf[i] << 8;
+          for (let j = 0; j < 8; j++) {
+            crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+          }
+        }
+        return crc;
+      }
+      
+      function crcToHex(crc) {
+        return crc.toString(16).toUpperCase().padStart(4, '0');
+      }
+      
+      function uint8ToBase64(u8Arr) {
+        const CHUNK_SIZE = 0x8000;
+        let index = 0, result = '';
+        const len = u8Arr.length;
+        while (index < len) {
+          const slice = u8Arr.subarray(index, Math.min(index + CHUNK_SIZE, len));
+          result += String.fromCharCode.apply(null, slice);
+          index += CHUNK_SIZE;
+        }
+        return btoa(result);
+      }
+      
+      function base64ToUint8Array(base64) {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes;
+      }
+      
+      /**********************************************************************
+       * Packet Building Functions
+       **********************************************************************/
+      function buildPacket(sender, receiver, seq, totalChunks, payloadChunk) {
+        const s = padCallsign(sender);
+        const r = padCallsign(receiver);
+        const seqStr = seq.toString().padStart(3, '0');
+        const crcVal = crc16(payloadChunk);
+        const crcStr = crcToHex(crcVal);
+        const base64Data = uint8ToBase64(payloadChunk);
+        let packet = "";
+        if (seq === 1) {
+          // Header packet: include totalChunks
+          const totalStr = totalChunks.toString().padStart(3, '0');
+          packet = s + '>' + r + ':' + seqStr + '/' + totalStr + ':' + base64Data + ':' + crcStr;
+        } else {
+          // Data packet: omit totalChunks
+          packet = s + '>' + r + ':' + seqStr + ':' + base64Data + ':' + crcStr;
+        }
+        if (packet.length > 255) {
+          console.error("Packet size (" + packet.length + " bytes) exceeds 255 bytes. Consider reducing the chunk size.");
+        }
+        return packet;
+      }
+      
+      function buildAckPacket(ackSender, ackReceiver, seq, crcStr) {
+        const s = padCallsign(ackSender);
+        const r = padCallsign(ackReceiver);
+        const seqStr = seq.toString().padStart(3, '0');
+        return s + '>' + r + ':' + "ACK:" + seqStr + ':' + crcStr;
+      }
+      
+      /**********************************************************************
+       * Persistence Functions for Sent & Received Files
+       **********************************************************************/
+      function saveReceivedFilesToLocalStorage(filesArray) {
+        try {
+          localStorage.setItem("receivedFiles", JSON.stringify(filesArray));
+        } catch (e) {
+          console.error("Error saving received files to localStorage:", e);
+        }
+      }
+      
+      function loadReceivedFilesFromLocalStorage() {
+        const data = localStorage.getItem("receivedFiles");
+        if (data) {
+          try {
+            return JSON.parse(data);
+          } catch (e) {
+            console.error("Error parsing received files from localStorage:", e);
+          }
+        }
+        return [];
+      }
+      
+      function saveSentFilesToLocalStorage(filesArray) {
+        try {
+          localStorage.setItem("sentFiles", JSON.stringify(filesArray));
+        } catch (e) {
+          console.error("Error saving sent files to localStorage:", e);
+        }
+      }
+      
+      function loadSentFilesFromLocalStorage() {
+        const data = localStorage.getItem("sentFiles");
+        if (data) {
+          try {
+            return JSON.parse(data);
+          } catch (e) {
+            console.error("Error parsing sent files from localStorage:", e);
+          }
+        }
+        return [];
+      }
+      
+      /**********************************************************************
+       * Global Persistent Variables
+       **********************************************************************/
+      let persistentReceivedFiles = loadReceivedFilesFromLocalStorage();
+      let persistentSentFiles = loadSentFilesFromLocalStorage();
+      
+      updateReceivedFilesUI();
+      updateSentFilesUI();
+      
+      /**********************************************************************
+       * Sender-Side Variables and Functions
+       **********************************************************************/
+      let currentFilePackets = [];
+      let currentPacketIndex = 0;
+      let currentRetries = 0;
+      let totalRetries = 0; // Accumulates all retries for the file.
+      let fileTransferInProgress = false;
+      let ackTimer = null;
+      let sentFileStats = null;
+      
+      function updateStatus(msg) {
+        document.getElementById('status').innerText = msg;
+        console.log(msg);
+      }
+      
+      // Updates sender progress and toggles the Cancel button.
+      function updateSenderProgressUI() {
+        const container = document.getElementById('senderProgress');
+        const cancelBtn = document.getElementById('cancelBtn');
+        if (!fileTransferInProgress || currentFilePackets.length === 0) {
+          container.innerHTML = "<p>No file being sent.</p>";
+          cancelBtn.style.display = "none";
+          return;
+        }
+        // Show the Cancel button when a transfer is in progress.
+        cancelBtn.style.display = "inline-block";
+        const now = Date.now();
+        const elapsed = ((now - sentFileStats.startTime) / 1000);
+        const progressPercent = Math.floor((currentPacketIndex / currentFilePackets.length) * 100);
+        let eta = "N/A";
+        if (progressPercent > 0) {
+          const estimatedTotal = elapsed / (progressPercent / 100);
+          const remaining = estimatedTotal - elapsed;
+          eta = remaining.toFixed(2) + " s";
+        }
+        // Calculate transfer rate using actual on-wire bytes sent
+        let transferRate = 0;
+        if (elapsed > 0) {
+          transferRate = sentFileStats.bytesSent / elapsed;
+        }
+        // Instead of showing current packet retries, compute total retry stats.
+        const totalRetryPercent = currentFilePackets.length ? Math.round(totalRetries / currentFilePackets.length * 100) : "0";
+        const html = `
+          <h5>Sending File: ${sentFileStats.fileName}</h5>
+          <p>Original Size: ${sentFileStats.originalSize} bytes; Compressed Size: ${sentFileStats.compressedSize} bytes</p>
+          <p>Packet ${currentPacketIndex + 1} of ${currentFilePackets.length} (${progressPercent}% complete, ETA: ${eta} (${transferRate.toFixed(0)} bytes/sec))</p>
+          <div class="progress">
+            <div class="progress-bar" role="progressbar" style="width: ${progressPercent}%;" aria-valuenow="${progressPercent}" aria-valuemin="0" aria-valuemax="100">${progressPercent}%</div>
+          </div>
+          <p>Elapsed time: ${elapsed.toFixed(2)} s; Total retries: ${totalRetries} (${totalRetryPercent}%)</p>
+        `;
+        container.innerHTML = html;
+      }
+      
+      // Cancel button event listener.
+      document.getElementById('cancelBtn').addEventListener('click', function() {
+        if (fileTransferInProgress) {
+          fileTransferInProgress = false;
+          clearTimeout(ackTimer);
+          updateStatus("File transfer canceled.");
+          updateSenderProgressUI();
+        }
+      });
+      
+      // Prevent running sendCurrentPacket if no transfer is in progress.
+      function sendCurrentPacket(sender, receiver) {
+        if (!fileTransferInProgress) return;
+        if (currentPacketIndex >= currentFilePackets.length) {
+          updateStatus("File transfer complete.");
+          if (sentFileStats) {
+            sentFileStats.endTime = Date.now();
+            sentFileStats.totalTime = ((sentFileStats.endTime - sentFileStats.startTime) / 1000).toFixed(2);
+            sentFileStats.totalRetries = totalRetries;
+            sentFileStats.timestamp = sentFileStats.startTime;
+            persistentSentFiles.push(sentFileStats);
+            saveSentFilesToLocalStorage(persistentSentFiles);
+            updateSentFilesUI();
+            sentFileStats = null;
+            totalRetries = 0;
+          }
+          fileTransferInProgress = false;
+          updateSenderProgressUI();
+          return;
+        }
+        updateSenderProgressUI();
+        const packet = currentFilePackets[currentPacketIndex];
+        // Accumulate the actual on-wire bytes sent (includes retransmissions)
+        if (!sentFileStats.bytesSent) {
+          sentFileStats.bytesSent = 0;
+        }
+        sentFileStats.bytesSent += packet.length;
+        updateStatus(`Sending packet ${currentPacketIndex + 1} of ${currentFilePackets.length} (Retry ${currentRetries})...`);
+        fetch('/api/send/raw', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ packet: packet })
+        }).catch(err => {
+          updateStatus("Error sending packet: " + err);
+        });
+        ackTimer = setTimeout(() => {
+          currentRetries++;
+          totalRetries++;
+          if (currentRetries <= 3) {
+            updateStatus(`No ACK for packet ${currentPacketIndex + 1}. Retrying (${currentRetries}/3)...`);
+            sendCurrentPacket(sender, receiver);
+          } else {
+            updateStatus(`Packet ${currentPacketIndex + 1} failed after 3 retries.`);
+            fileTransferInProgress = false;
+            updateSenderProgressUI();
+          }
+        }, 10000);
+      }
+      
+      function updateSentFilesUI() {
+        const container = document.getElementById('sentFiles');
+        if (persistentSentFiles.length === 0) {
+          container.innerHTML = "<p>No files sent yet.</p>";
+          return;
+        }
+        let html = '<table class="table table-striped"><thead><tr><th>Date/Time</th><th>Receiver</th><th>File Name</th><th>Original Size</th><th>Compressed Size</th><th>Retries</th><th>Total Time (s)</th><th>Speed (Bytes/s)</th><th>Clear</th></tr></thead><tbody>';
+        persistentSentFiles.forEach((stat, index) => {
+          const totalTime = parseFloat(stat.totalTime);
+          const speed = totalTime > 0 ? Math.floor(stat.bytesSent / totalTime) : 0;
+          // Show totalRetries and its percentage relative to totalPackets.
+          const retryPercent = stat.totalPackets ? Math.round(stat.totalRetries / stat.totalPackets * 100) : "0";
+          html += `<tr>
+                     <td>${new Date(stat.timestamp).toLocaleString()}</td>
+                     <td>${stat.receiver || ""}</td>
+                     <td>${stat.fileName}</td>
+                     <td>${stat.originalSize} bytes</td>
+                     <td>${stat.compressedSize} bytes</td>
+                     <td>${stat.totalRetries} (${retryPercent}%)</td>
+                     <td>${stat.totalTime}</td>
+                     <td>${speed}</td>
+                     <td><button class="btn btn-warning btn-sm" onclick="clearSentFile(${index})">Clear</button></td>
+                   </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      }
+      
+      window.clearSentFile = function(index) {
+        persistentSentFiles.splice(index, 1);
+        saveSentFilesToLocalStorage(persistentSentFiles);
+        updateSentFilesUI();
+      }
+      
+      /**********************************************************************
+       * Receiver-Side Variables and Functions
+       **********************************************************************/
+      const activeTransfers = {};
+      
+      function updateReceivedFilesUI() {
+        const container = document.getElementById('receivedFiles');
+        if (persistentReceivedFiles.length === 0) {
+          container.innerHTML = "<p>No files received yet.</p>";
+          return;
+        }
+        let html = '<table class="table table-striped"><thead><tr><th>Date/Time</th><th>Sender</th><th>File Name</th><th>Original Size</th><th>Compressed Size</th><th>Size (decompressed)</th><th>Elapsed Time (s)</th><th>Speed (Bytes/s)</th><th>Duplicates</th><th>Checksum</th><th>Download</th><th>Delete</th></tr></thead><tbody>';
+        persistentReceivedFiles.forEach((file, index) => {
+          const checksumIcon = file.checksumMatch 
+            ? '<span style="color:green;">&#10004;</span>' 
+            : '<span style="color:red;">&#10008;</span>';
+          const elapsedSec = file.elapsed / 1000;
+          const speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
+          // Show duplicates and its percentage relative to totalPackets.
+          const dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
+          html += `<tr>
+                     <td>${new Date(file.timestamp).toLocaleString()}</td>
+                     <td>${file.sender}</td>
+                     <td>${file.fileName}</td>
+                     <td>${file.originalSize} bytes</td>
+                     <td>${file.compressedSize} bytes</td>
+                     <td>${file.size} bytes</td>
+                     <td>${(elapsedSec).toFixed(2)}</td>
+                     <td>${speed}</td>
+                     <td>${file.duplicates} (${dupPercent}%)</td>
+                     <td>${checksumIcon}</td>
+                     <td><button class="btn btn-success btn-sm" onclick="downloadReceivedFile(${index})">Download</button></td>
+                     <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFile(${index})">Delete</button></td>
+                   </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      }
+      
+      window.downloadReceivedFile = function(index) {
+        const file = persistentReceivedFiles[index];
+        if (!file) return;
+        const a = document.createElement('a');
+        a.href = file.dataUrl;
+        a.download = file.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      
+      window.deleteReceivedFile = function(index) {
+        persistentReceivedFiles.splice(index, 1);
+        saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+        updateReceivedFilesUI();
+      }
+      
+      // Modified updateReceiverProgressUI: Only show transfers that are not completed.
+      function updateReceiverProgressUI() {
+        const container = document.getElementById('receiverProgress');
+        // Filter out transfers that have been marked as complete.
+        const keys = Object.keys(activeTransfers).filter(sender => !activeTransfers[sender].completed);
+        if (keys.length === 0) {
+          container.innerHTML = "<p>No active transfers.</p>";
+          return;
+        }
+        container.innerHTML = "";
+        keys.forEach(sender => {
+          const transfer = activeTransfers[sender];
+          const receivedCount = Object.keys(transfer.received).length;
+          const total = transfer.totalChunks;
+          const progressPercent = total ? Math.floor((receivedCount / total) * 100) : 0;
+          const headerInfo = transfer.header ? ` - ${transfer.header.fileName}` : '';
+          const elapsed = transfer.startTime ? ((Date.now() - transfer.startTime) / 1000) : 0;
+          let eta = "N/A";
+          if (progressPercent > 0) {
+            const estimatedTotal = elapsed / (progressPercent / 100);
+            const remaining = estimatedTotal - elapsed;
+            eta = remaining.toFixed(2) + " s";
+          }
+          let bytesPerSec = "0";
+          if (elapsed > 0 && transfer.rawBytesReceived) {
+            bytesPerSec = (transfer.rawBytesReceived / elapsed).toFixed(0) + "";
+          }
+          // Include duplicate percentage if totalChunks is available.
+          const dupCount = transfer.duplicateCount || 0;
+          const dupPercent = total ? Math.round((dupCount / total) * 100) : "0";
+          let progressHTML = `<h5>From ${sender}${headerInfo} (${receivedCount}/${total || "?"} packets received)</h5>`;
+          if (transfer.header) {
+            progressHTML += `<p>Original Size: ${transfer.header.originalSize} bytes; Compressed Size: ${transfer.header.compressedSize} bytes</p>`;
+          }
+          progressHTML += `
+            <div class="progress">
+              <div class="progress-bar" role="progressbar" style="width: ${progressPercent}%;" aria-valuenow="${progressPercent}" aria-valuemin="0" aria-valuemax="100">${progressPercent}%</div>
+            </div>
+            <p>Elapsed time: ${elapsed.toFixed(2)} s; ETA: ${eta} (${bytesPerSec} bytes/sec); Duplicate receptions: ${dupCount} (${dupPercent}%)</p>`;
+          let elem = document.getElementById('progress_' + sender);
+          if (!elem) {
+            elem = document.createElement('div');
+            elem.id = 'progress_' + sender;
+            container.appendChild(elem);
+          }
+          elem.innerHTML = progressHTML;
+        });
+      }
+      
+      /**********************************************************************
+       * Inactivity Timeout for Receiver Transfers
+       **********************************************************************/
+      function checkInactiveTransfers() {
+        const now = Date.now();
+        for (const sender in activeTransfers) {
+          if (activeTransfers.hasOwnProperty(sender)) {
+            const transfer = activeTransfers[sender];
+            if (now - transfer.lastUpdate > 30000) {
+              console.log(`Transfer from ${sender} timed out due to 30 seconds of inactivity.`);
+              delete activeTransfers[sender];
+              updateReceiverProgressUI();
+            }
+          }
+        }
+      }
+      setInterval(checkInactiveTransfers, 1000);
+      
+      /**********************************************************************
+       * Common Packet Processing Function
+       **********************************************************************/
+      function processRawPacket(packet) {
+        console.log("Processing raw packet:", packet);
+        if (typeof packet !== 'string') {
+          console.log("Packet is not a string; ignoring.");
+          return;
+        }
+        if (packet.slice(20,24) === "ACK:") {
+          console.log("Received ACK packet:", packet);
+          const ackSeqStr = packet.slice(24,27);
+          const ackSeq = parseInt(ackSeqStr, 10);
+          const ackCrc = packet.slice(28);
+          console.log("ACK details - Seq:", ackSeq, "CRC:", ackCrc);
+          if (ackSeq === currentPacketIndex + 1) {
+            console.log("ACK matches current packet. Clearing ACK timer and moving to next packet.");
+            clearTimeout(ackTimer);
+            currentRetries = 0;
+            currentPacketIndex++;
+            sendCurrentPacket(
+              document.getElementById('senderCallsign').value,
+              document.getElementById('receiverCallsign').value
+            );
+          } else {
+            console.log("ACK packet seq", ackSeq, "does not match expected", currentPacketIndex + 1);
+          }
+          return;
+        }
+        
+        if (packet.indexOf('>') !== 9) {
+          console.log("Packet format invalid: missing or misplaced '>'");
+          return;
+        }
+        const sender = packet.slice(0, 9).trim();
+        const receiver = packet.slice(10, 19).trim();
+        console.log("Parsed sender:", sender, "Parsed receiver:", receiver);
+        if (packet.charAt(19) !== ':') {
+          console.log("Packet format invalid: missing colon at position 19.");
+          return;
+        }
+        const seqStr = packet.slice(20, 23);
+        const seq = parseInt(seqStr, 10);
+        let totalChunks = null;
+        let base64Data = "";
+        let crcReceived = "";
+        if (seq === 1) {
+          // Header packet: expected format with total chunks
+          if (packet.charAt(23) !== '/') {
+            console.log("Packet format invalid: expected '/' at position 23 in header packet.");
+            return;
+          }
+          const totalStr = packet.slice(24, 27);
+          totalChunks = parseInt(totalStr, 10);
+          if (packet.charAt(27) !== ':') {
+            console.log("Packet format invalid: missing colon at position 27 in header packet.");
+            return;
+          }
+          const lastColon = packet.lastIndexOf(':');
+          if (lastColon <= 27) {
+            console.log("Packet format invalid: cannot locate final colon in header packet.");
+            return;
+          }
+          base64Data = packet.slice(28, lastColon);
+          crcReceived = packet.slice(lastColon + 1);
+        } else {
+          // Data packet: expected format without total chunks
+          if (packet.charAt(23) !== ':') {
+            console.log("Packet format invalid: expected colon at position 23 in data packet.");
+            return;
+          }
+          const lastColon = packet.lastIndexOf(':');
+          if (lastColon <= 23) {
+            console.log("Packet format invalid: cannot locate final colon in data packet.");
+            return;
+          }
+          base64Data = packet.slice(24, lastColon);
+          crcReceived = packet.slice(lastColon + 1);
+        }
+        console.log("Packet details - Seq:", seq, "Total (if header):", totalChunks,
+                    "Base64 Data (truncated):", base64Data.substring(0,20) + "...",
+                    "CRC received:", crcReceived);
+        let payloadChunk;
+        try {
+          payloadChunk = base64ToUint8Array(base64Data);
+        } catch (e) {
+          console.error("Error decoding Base64 data:", e);
+          return;
+        }
+        const computedCrc = crcToHex(crc16(payloadChunk));
+        console.log("Computed CRC for packet", seq, ":", computedCrc);
+        if (computedCrc !== crcReceived) {
+          console.log(`CRC mismatch for packet ${seq}: computed ${computedCrc} vs received ${crcReceived}`);
+          return;
+        }
+        const localCallsign = document.getElementById('senderCallsign').value.trim();
+        console.log("Local callsign is:", localCallsign);
+        if (receiver !== localCallsign) {
+          console.log("Ignoring packet not intended for me (receiver:", receiver, ", local:", localCallsign, ")");
+          return;
+        }
+        
+        // Always send an ACK for every valid packet.
+        const ackPacket = buildAckPacket(localCallsign, sender, seq, crcReceived);
+        console.log("Sending ACK for packet", seq, "with packet:", ackPacket);
+        fetch('/api/send/raw', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ packet: ackPacket })
+        })
+        .then(() => { console.log("ACK sent for packet", seq); })
+        .catch(err => { console.log("Error sending ACK for packet", seq, ":", err); });
+        
+        // If the transfer exists and is already marked complete, update the timestamp and return.
+        if (activeTransfers[sender] && activeTransfers[sender].completed) {
+          activeTransfers[sender].lastUpdate = Date.now();
+          console.log("Transfer already completed for sender", sender, "; ACK sent, no further processing.");
+          return;
+        }
+        
+        // Initialize a new transfer if one doesn't exist or if this is a header packet.
+        if (!activeTransfers[sender] || seq === 1) {
+          console.log("Starting new transfer from sender", sender);
+          activeTransfers[sender] = { 
+            totalChunks: seq === 1 ? totalChunks : null, 
+            received: {}, 
+            startTime: Date.now(), 
+            duplicateCount: 0,
+            lastUpdate: Date.now()
+          };
+          if (seq === 1) {
+            const headerText = new TextDecoder().decode(payloadChunk);
+            const parts = headerText.split("|");
+            if (parts.length !== 4) {
+              console.error("Invalid header payload received from sender", sender);
+              return;
+            }
+            activeTransfers[sender].header = {
+              fileName: parts[0],
+              originalSize: parseInt(parts[1], 10),
+              compressedSize: parseInt(parts[2], 10),
+              md5: parts[3]
+            };
+            console.log("Received header from sender", sender, activeTransfers[sender].header);
+          }
+        } else {
+          if (activeTransfers[sender].received[seq]) {
+            activeTransfers[sender].duplicateCount++;
+            console.log("Duplicate packet", seq, "received from sender", sender, "Total duplicates:", activeTransfers[sender].duplicateCount);
+          }
+        }
+        activeTransfers[sender].received[seq] = payloadChunk;
+        if (!activeTransfers[sender].rawBytesReceived) {
+          activeTransfers[sender].rawBytesReceived = 0;
+        }
+        activeTransfers[sender].rawBytesReceived += packet.length;
+        activeTransfers[sender].lastUpdate = Date.now();
+        const receivedCount = Object.keys(activeTransfers[sender].received).length;
+        console.log("Stored packet", seq, "from sender", sender, "(", receivedCount, "/", activeTransfers[sender].totalChunks, ")");
+        
+        updateReceiverProgressUI();
+        
+        // Only reassemble the file if it has not already been marked complete.
+        if (!activeTransfers[sender].completed &&
+            activeTransfers[sender].totalChunks &&
+            receivedCount === activeTransfers[sender].totalChunks) {
+          console.log("All packets received for sender", sender, "- reassembling file...");
+          if (!activeTransfers[sender].header) {
+            console.error("Missing header information from sender", sender);
+            return;
+          }
+          const dataChunks = [];
+          for (let i = 2; i <= activeTransfers[sender].totalChunks; i++) {
+            if (!activeTransfers[sender].received[i]) {
+              console.error("Missing packet", i, "for sender", sender);
+              return;
+            }
+            dataChunks.push(activeTransfers[sender].received[i]);
+          }
+          const totalLength = dataChunks.reduce((acc, cur) => acc + cur.length, 0);
+          const fullCompressed = new Uint8Array(totalLength);
+          let offset = 0;
+          dataChunks.forEach(chunk => {
+            fullCompressed.set(chunk, offset);
+            offset += chunk.length;
+          });
+          console.log("Reassembled compressed file length:", fullCompressed.length);
+          let decompressed;
+          try {
+            decompressed = pako.inflate(fullCompressed);
+          } catch (err) {
+            console.error("Error decompressing full file from sender", sender, ":", err);
+            return;
+          }
+          console.log("Decompressed file length:", decompressed.length);
+          const blob = new Blob([decompressed]);
+          const elapsed = Date.now() - activeTransfers[sender].startTime;
+          const dupCount = activeTransfers[sender].duplicateCount;
+          const computedMd5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(decompressed)).toString();
+          const checksumMatch = (computedMd5 === activeTransfers[sender].header.md5);
+          // Build the file object (also storing totalPackets for stats)
+          const fileObj = {
+            sender: sender,
+            fileName: activeTransfers[sender].header.fileName,
+            originalSize: activeTransfers[sender].header.originalSize,
+            compressedSize: activeTransfers[sender].header.compressedSize,
+            size: blob.size,
+            elapsed: elapsed,
+            duplicates: dupCount,
+            totalPackets: activeTransfers[sender].totalChunks,
+            timestamp: Date.now(),
+            checksumMatch: checksumMatch,
+            bytesReceived: activeTransfers[sender].rawBytesReceived || 0
+          };
+          const reader = new FileReader();
+          reader.onload = function(e) {
+            fileObj.dataUrl = e.target.result;
+            persistentReceivedFiles.push(fileObj);
+            saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+            updateReceivedFilesUI();
+          };
+          reader.onerror = function(e) {
+            console.error("Error converting Blob to Data URL:", e);
+          };
+          reader.readAsDataURL(blob);
+          console.log("File transfer complete from sender", sender);
+          // Mark the transfer as complete immediately.
+          activeTransfers[sender].completed = true;
+          activeTransfers[sender].completionTime = Date.now();
+          // Keep the transfer state for 30 seconds so that duplicate packets still get an ACK.
+          setTimeout(() => {
+            console.log("Clearing completed transfer for sender", sender);
+            delete activeTransfers[sender];
+            updateReceiverProgressUI();
+          }, 30000);
+          updateReceiverProgressUI();
+        }
+      }
+      
+      /**********************************************************************
+       * Socket Event Handlers
+       **********************************************************************/
+      const socket = io('/');
+      socket.onAny((event, ...args) => {
+        console.log('Socket event:', event, args);
+      });
+      socket.on('connect', () => {
+        console.log("Socket connected, id:", socket.id);
+      });
+      socket.on('connect_error', (err) => {
+        console.error("Socket connection error:", err);
+      });
+      socket.on('aprs_packet', (data) => {
+        console.log("Received aprs_packet event:", data);
+        const packet = (typeof data === 'object' && data.raw) ? data.raw : data;
+        processRawPacket(packet);
+      });
+      socket.on('raw_packet', (packet) => {
+        console.log("Received raw_packet event:", packet);
+        processRawPacket(packet);
+      });
+      
+      /**********************************************************************
+       * Sender-Side Code (for Testing)
+       **********************************************************************/
+      document.getElementById('sendFileBtn').addEventListener('click', () => {
+        const sender = document.getElementById('senderCallsign').value.trim();
+        const receiver = document.getElementById('receiverCallsign').value.trim();
+        const fileInput = document.getElementById('fileInput');
+        if (!sender || !receiver || fileInput.files.length === 0) {
+          alert("Please enter your callsign, receiver callsign, and select a file.");
+          return;
+        }
+        const file = fileInput.files[0];
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const arrayBuffer = e.target.result;
+          const fileData = new Uint8Array(arrayBuffer);
+          let compressed;
+          try {
+            compressed = pako.deflate(fileData, { level: 9 });
+          } catch (err) {
+            updateStatus("Compression error: " + err);
+            return;
+          }
+          // Compute MD5 checksum of the uncompressed file.
+          const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
+          const fileDataChunksCount = Math.ceil(compressed.length / 165);
+          const totalPackets = fileDataChunksCount + 1;
+          currentFilePackets = [];
+          // Build header packet (sequence = 1) with metadata and MD5.
+          const headerStr = file.name + "|" + fileData.length + "|" + compressed.length + "|" + md5;
+          const headerPayload = new TextEncoder().encode(headerStr);
+          const headerPacket = buildPacket(sender, receiver, 1, totalPackets, headerPayload);
+          currentFilePackets.push(headerPacket);
+          for (let i = 0; i < fileDataChunksCount; i++) {
+            const start = i * 165;
+            const end = Math.min(start + 165, compressed.length);
+            const chunk = compressed.slice(start, end);
+            const packet = buildPacket(sender, receiver, i + 2, totalPackets, chunk);
+            currentFilePackets.push(packet);
+          }
+          currentPacketIndex = 0;
+          currentRetries = 0;
+          totalRetries = 0;
+          fileTransferInProgress = true;
+          // Include totalPackets in the stats for later percentage calculations.
+          sentFileStats = {
+            fileName: file.name,
+            receiver: receiver,
+            originalSize: fileData.length,
+            compressedSize: compressed.length,
+            startTime: Date.now(),
+            totalRetries: 0,
+            bytesSent: 0,
+            totalPackets: currentFilePackets.length
+          };
+          updateStatus(`File compressed from ${fileData.length} bytes to ${compressed.length} bytes. Transfer will begin with a header packet containing file metadata and MD5 checksum.`);
+          updateSenderProgressUI();
+          sendCurrentPacket(sender, receiver);
+        };
+        reader.onerror = function(e) {
+          updateStatus("Error reading file: " + e);
+        };
+        reader.readAsArrayBuffer(file);
+      });
+      
+    });
+  </script>
+</body>
+</html>
