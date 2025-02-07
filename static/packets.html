@@ -10,20 +10,41 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
   <!-- CryptoJS for hashing (used for generating stable packet details IDs) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <style>
+    /* Ensure the connection status dot always remains a perfect circle */
+    .status-dot {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background-color: red;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+  </style>
 </head>
 <body>
   <div class="container my-4">
-    <!-- New header row: Filter input on left, Status in center, Clear button on right -->
+    <!-- Header row: Filter input with Locations checkbox on left, Clear button on right -->
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <div style="flex: 0 0 auto; margin-right: 10px;">
-        <input type="text" id="callsignFilter" class="form-control" placeholder="Filter from..." size="12" maxlength="10" style="width: auto;">
-      </div>
-      <div>
-        <span id="connectionStatusDot" style="width:15px; height:15px; border-radius:50%; background-color:red; display:inline-block;"></span>
+      <div class="d-flex align-items-center" style="flex: 0 0 auto; margin-right: 10px;">
+        <input type="text" id="callsignFilter" class="form-control me-2" placeholder="Filter from..." size="12" maxlength="10" style="width: auto;">
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="locationFilter">
+          <label class="form-check-label" for="locationFilter">Locations</label>
+        </div>
       </div>
       <div>
         <button id="clearButton" class="btn btn-danger">Clear</button>
       </div>
+    </div>
+
+    <!-- Statistics Section with Order Toggle Button and Connection Status Dot -->
+    <div id="statsSection" class="d-flex align-items-center mb-3">
+      <span id="stationCount" class="me-3">Stations: 0</span>
+      <span id="loraCount" class="me-3">LoRa: 0</span>
+      <span id="packetCount" class="me-3">Packets: 0</span>
+      <button id="orderToggleButton" class="btn btn-sm btn-outline-secondary me-3">Time</button>
+      <span id="connectionStatusDot" class="status-dot"></span>
     </div>
 
     <!-- Container for messages -->
@@ -31,18 +52,32 @@
   </div>
 
   <script>
+    // Global ordering mode setup.
+    const orderingModes = ["time", "packets", "callsign"];
+    let orderModeIndex = 0;
+    let orderMode = orderingModes[orderModeIndex];
+
     // Global object to store packets grouped by 'from' then by 'to'
     let conversations = {};
+    // Global array for packets that do not have a "from" field.
+    let unknownPackets = [];
 
     // Global objects to persist expanded states across re-renderings.
     let persistedExpandedStates = {};
     let persistedPacketDetailsStates = {};
 
     /**
-     * Save the current conversations (packets) to localStorage under a unique namespace.
+     * Save the current conversations (packets) to localStorage.
      */
     function saveConversationsToLocalStorage() {
       localStorage.setItem('packets_seen', JSON.stringify(conversations));
+    }
+
+    /**
+     * Save the unknown packets to localStorage.
+     */
+    function saveUnknownPacketsToLocalStorage() {
+      localStorage.setItem('unknown_packets', JSON.stringify(unknownPackets));
     }
 
     /**
@@ -53,13 +88,14 @@
       if (stored) {
         conversations = JSON.parse(stored);
       }
+      const unknownStored = localStorage.getItem('unknown_packets');
+      if (unknownStored) {
+        unknownPackets = JSON.parse(unknownStored);
+      }
     }
 
     /**
      * Helper function to recursively render nested objects and arrays.
-     * - Objects are rendered as a definition list (<dl>).
-     * - Arrays are rendered as a Bootstrap list group.
-     * Primitive values are returned as-is.
      */
     function renderNested(value) {
       if (typeof value !== 'object' || value === null) {
@@ -85,9 +121,6 @@
 
     /**
      * Renders all JSON fields of a packet.
-     * For the "path" field, if present, it displays the array elements
-     * joined with right arrows as plain text.
-     * For nested JSON, it calls renderNested() for a nicely formatted display.
      */
     function renderPacketDetails(packet) {
       let html = '<dl class="row">';
@@ -160,11 +193,7 @@
     }
 
     /**
-     * Formats the elapsed time (from the given timestamp until now) using a single unit:
-     * - seconds if less than 60s,
-     * - minutes if less than 1 hour,
-     * - hours if less than 1 day,
-     * - days otherwise.
+     * Formats the elapsed time (from the given timestamp until now) using a single unit.
      */
     function formatTimeAgoSingleUnit(timestamp) {
       const diffMs = Date.now() - timestamp;
@@ -185,34 +214,103 @@
     }
 
     /**
-     * Iterates over all currently displayed "from" callsigns and updates
-     * the "time ago" text.
+     * Iterates over all currently displayed "from" callsigns and updates the "time ago" text,
+     * including the station packet count.
      */
     function updateTimeAgo() {
       Object.keys(conversations).forEach(fromCallsign => {
-        const callsignData = conversations[fromCallsign];
-        const lastPacketTime = getLastPacketTime(callsignData);
+        const filteredData = getFilteredStationData(conversations[fromCallsign]);
+        const lastPacketTime = getLastPacketTime(filteredData);
         if (lastPacketTime) {
           const formatted = formatTimeAgoSingleUnit(lastPacketTime);
+          let stationPacketCount = getStationPacketCount(filteredData);
           const elem = document.getElementById('timeago-' + fromCallsign);
           if (elem) {
-            elem.innerText = `(${formatted})`;
+            elem.innerText = `(${formatted}, Packets: ${stationPacketCount})`;
           }
         }
       });
     }
 
     /**
-     * Renders the conversations into the #conversations container.
-     * Persists the current expanded state for each outer callsign panel and
-     * each packet’s details panel, then re-renders the conversation list.
-     *
-     * The outer 'from' callsigns are ordered by when the last packet was received.
+     * Updates the statistics section with the total number of stations, LoRa-enabled stations, and packets.
+     * The unknown packets count is no longer appended.
+     */
+    function updateStatistics() {
+      let stationCount = 0;
+      let packetCount = 0;
+      let loraCount = 0;
+      const locationOnly = document.getElementById("locationFilter").checked;
+      
+      for (const station in conversations) {
+        if (conversations.hasOwnProperty(station)) {
+          const filteredData = getFilteredStationData(conversations[station]);
+          if (Object.keys(filteredData).length === 0) continue;
+          stationCount++;
+          packetCount += getStationPacketCount(filteredData);
+          let hasLora = false;
+          for (const to in filteredData) {
+            if (filteredData.hasOwnProperty(to)) {
+              for (const packet of filteredData[to]) {
+                if (packet.to === "APLRG1" || packet.to === "APLRT1") {
+                  hasLora = true;
+                  break;
+                }
+              }
+              if (hasLora) break;
+            }
+          }
+          if (hasLora) loraCount++;
+        }
+      }
+      
+      document.getElementById('stationCount').textContent = 'Stations: ' + stationCount;
+      document.getElementById('loraCount').textContent = 'LoRa: ' + loraCount;
+      document.getElementById('packetCount').textContent = 'Packets: ' + packetCount;
+    }
+
+    /**
+     * Returns a filtered version of the station data based on the "Locations" checkbox.
+     */
+    function getFilteredStationData(callsignData) {
+      const locationOnly = document.getElementById("locationFilter").checked;
+      let filtered = {};
+      for (const to in callsignData) {
+        if (callsignData.hasOwnProperty(to)) {
+          const arr = callsignData[to].filter(packet => {
+            return !locationOnly || (packet.latitude && packet.longitude);
+          });
+          if (arr.length > 0) {
+            filtered[to] = arr;
+          }
+        }
+      }
+      return filtered;
+    }
+
+    /**
+     * Returns the total number of packets in the given station data.
+     */
+    function getStationPacketCount(callsignData) {
+      let count = 0;
+      for (const to in callsignData) {
+        if (callsignData.hasOwnProperty(to)) {
+          count += callsignData[to].length;
+        }
+      }
+      return count;
+    }
+
+    /**
+     * Renders the conversations and the "Unknown" card into the #conversations container.
      */
     function loadConversations() {
+      updateStatistics();
+
       const container = document.getElementById('conversations');
+      const locationOnly = document.getElementById("locationFilter").checked;
       
-      // Before clearing, update persisted states from current DOM.
+      // Persist collapse states.
       document.querySelectorAll('[id^="collapse-"]').forEach(el => {
         const key = el.id.replace("collapse-", "");
         persistedExpandedStates[key] = el.classList.contains('show');
@@ -223,189 +321,221 @@
 
       container.innerHTML = '';
 
-      // If no packets have been received, display waiting message.
-      if (Object.keys(conversations).length === 0) {
-        container.innerHTML = '<div class="alert alert-info">Waiting for first packet...</div>';
-        return;
-      }
-
-      // Get filter value (case-insensitive)
-      const filterValue = document.getElementById("callsignFilter").value.toLowerCase();
-
-      // Only show 'from' callsigns that match the filter, then sort them by the time of the last packet (most recent first).
-      Object.keys(conversations)
-        .filter(callsign => callsign.toLowerCase().includes(filterValue))
-        .sort((a, b) => {
-          const aLast = getLastPacketTime(conversations[a]);
-          const bLast = getLastPacketTime(conversations[b]);
-          return bLast - aLast;  // descending order: most recent first
+      const stationKeys = Object.keys(conversations)
+        .filter(callsign => callsign.toLowerCase().includes(document.getElementById("callsignFilter").value.toLowerCase()))
+        .filter(callsign => {
+          return Object.keys(getFilteredStationData(conversations[callsign])).length > 0;
         })
-        .forEach((fromCallsign) => {
-          const callsignData = conversations[fromCallsign];
-          const collapseId = `collapse-${fromCallsign}`;
-
-          // Compute how long ago the last packet was seen for this callsign.
-          const lastPacketTime = getLastPacketTime(callsignData);
-          const timeAgoStr = lastPacketTime ? formatTimeAgoSingleUnit(lastPacketTime) : '';
-
-          // Create card element.
-          const card = document.createElement('div');
-          card.className = 'card mb-1';
-
-          // Create card header with two parts: left (toggle) and right (external links).
-          const cardHeader = document.createElement('div');
-          cardHeader.className = 'card-header d-flex justify-content-between align-items-center';
-
-          // Left (toggle) area.
-          const toggleDiv = document.createElement('div');
-          toggleDiv.style.cursor = 'pointer';
-          toggleDiv.setAttribute('data-bs-toggle', 'collapse');
-          toggleDiv.setAttribute('data-bs-target', `#${collapseId}`);
-          toggleDiv.setAttribute('aria-expanded', persistedExpandedStates[fromCallsign] ? 'true' : 'false');
-          toggleDiv.setAttribute('aria-controls', collapseId);
-
-          const symbolKey = `symbolImage_${fromCallsign}`;
-          let imgHTML = '';
-          const storedSymbol = localStorage.getItem(symbolKey);
-          if (storedSymbol) {
-            imgHTML = `<img src="${storedSymbol}" alt="${fromCallsign}" style="width:20px;height:20px;margin-right:10px;">`;
-          } else {
-            imgHTML = `<span class="badge bg-secondary me-2">?</span>`;
+        .sort((a, b) => {
+          const filteredA = getFilteredStationData(conversations[a]);
+          const filteredB = getFilteredStationData(conversations[b]);
+          if (orderMode === "time") {
+            const aLast = getLastPacketTime(filteredA);
+            const bLast = getLastPacketTime(filteredB);
+            return bLast - aLast;
+          } else if (orderMode === "packets") {
+            const countA = getStationPacketCount(filteredA);
+            const countB = getStationPacketCount(filteredB);
+            return countB - countA;
+          } else if (orderMode === "callsign") {
+            return a.toLowerCase().localeCompare(b.toLowerCase());
           }
-          // Insert a dedicated small element for the time, which will update every second.
-          toggleDiv.innerHTML = imgHTML + fromCallsign + ' <small class="text-muted" id="timeago-' + fromCallsign + '">' + (timeAgoStr ? `(${timeAgoStr})` : '') + '</small>';
+        });
 
-          // Right (external links) area.
-          const externalDiv = document.createElement('div');
+      stationKeys.forEach(fromCallsign => {
+        const filteredData = getFilteredStationData(conversations[fromCallsign]);
+        if (Object.keys(filteredData).length === 0) return;
+        const collapseId = `collapse-${fromCallsign}`;
+        const lastPacketTime = getLastPacketTime(filteredData);
+        const timeAgoStr = lastPacketTime ? formatTimeAgoSingleUnit(lastPacketTime) : '';
+        const stationPacketCount = getStationPacketCount(filteredData);
 
-          // Instead of matching symbol/symbol_table, we now check if any packet has a 'to'
-          // value of "APLRG1" or "APLRT1".
-          let hasRG = false;
-          let hasRT = false;
-          for (let toAddr in callsignData) {
-            if (callsignData.hasOwnProperty(toAddr)) {
-              for (let packet of callsignData[toAddr]) {
-                if (packet.to === "APLRG1") {
-                  hasRG = true;
-                }
-                if (packet.to === "APLRT1") {
-                  hasRT = true;
-                }
-              }
+        const card = document.createElement('div');
+        card.className = 'card mb-1';
+
+        const cardHeader = document.createElement('div');
+        cardHeader.className = 'card-header d-flex justify-content-between align-items-center';
+
+        const toggleDiv = document.createElement('div');
+        toggleDiv.style.cursor = 'pointer';
+        toggleDiv.setAttribute('data-bs-toggle', 'collapse');
+        toggleDiv.setAttribute('data-bs-target', `#${collapseId}`);
+        toggleDiv.setAttribute('aria-expanded', persistedExpandedStates[fromCallsign] ? 'true' : 'false');
+        toggleDiv.setAttribute('aria-controls', collapseId);
+
+        const symbolKey = `symbolImage_${fromCallsign}`;
+        let imgHTML = '';
+        const storedSymbol = localStorage.getItem(symbolKey);
+        if (storedSymbol) {
+          imgHTML = `<img src="${storedSymbol}" alt="${fromCallsign}" style="width:20px;height:20px;margin-right:10px;">`;
+        } else {
+          imgHTML = `<span class="badge bg-secondary me-2">?</span>`;
+        }
+        toggleDiv.innerHTML = imgHTML + fromCallsign + ' <small class="text-muted" id="timeago-' + fromCallsign + '">' +
+          (timeAgoStr ? `(${timeAgoStr}, Packets: ${stationPacketCount})` : `Packets: ${stationPacketCount}`) +
+          '</small>';
+
+        const externalDiv = document.createElement('div');
+        let hasRG = false, hasRT = false;
+        for (let toAddr in filteredData) {
+          if (filteredData.hasOwnProperty(toAddr)) {
+            for (let packet of filteredData[toAddr]) {
+              if (packet.to === "APLRG1") hasRG = true;
+              if (packet.to === "APLRT1") hasRT = true;
             }
           }
-          let loraliveLink = "";
-          if (hasRG) {
-            loraliveLink += `<a href="https://lora-aprs.live/igate.html?rx_callsign=${fromCallsign}&time_period=1440" 
-                              target="_blank" style="text-decoration: none;" 
-                              onclick="event.stopPropagation(); event.stopImmediatePropagation();">
+        }
+        let loraliveLink = "";
+        if (hasRG) {
+          loraliveLink += `<a href="https://lora-aprs.live/igate.html?rx_callsign=${fromCallsign}&time_period=1440" target="_blank" style="text-decoration: none;" onclick="event.stopPropagation(); event.stopImmediatePropagation();">
                               <img src="/static/loralive.ico" alt="LoRa Live" style="width:20px;height:20px;margin-left:5px;">
-                             </a>`;
-          }
-          if (hasRT) {
-            loraliveLink += `<a href="https://lora-aprs.live/track_multi.html?tx_callsign=${fromCallsign}" 
-                              target="_blank" style="text-decoration: none;" 
-                              onclick="event.stopPropagation(); event.stopImmediatePropagation();">
+                            </a>`;
+        }
+        if (hasRT) {
+          loraliveLink += `<a href="https://lora-aprs.live/track_multi.html?tx_callsign=${fromCallsign}" target="_blank" style="text-decoration: none;" onclick="event.stopPropagation(); event.stopImmediatePropagation();">
                               <img src="/static/loralive.ico" alt="LoRa Live" style="width:20px;height:20px;margin-left:5px;">
-                             </a>`;
-          }
-          // Add the external links (LoRa icons and other links).
-          const aprsLink = `<a href="https://aprs.fi/info/a/${fromCallsign}" target="_blank" style="text-decoration: none;" 
-                               onclick="event.stopPropagation(); event.stopImmediatePropagation();">
-                              <img src="/static/aprsfi.ico" alt="aprs.fi" style="width:20px;height:20px;margin-left:5px;">
-                             </a>`;
-          const qrzCallsign = fromCallsign.split('-')[0];
-          const qrzLink = `<a href="https://www.qrz.com/db/${qrzCallsign}" target="_blank" style="text-decoration: none;" 
-                              onclick="event.stopPropagation(); event.stopImmediatePropagation();">
-                              <img src="/static/qrzcom.ico" alt="QRZ.com" style="width:20px;height:20px;margin-left:5px;">
-                             </a>`;
-          externalDiv.innerHTML = loraliveLink + aprsLink + qrzLink;
+                            </a>`;
+        }
+        const aprsLink = `<a href="https://aprs.fi/info/a/${fromCallsign}" target="_blank" style="text-decoration: none;" onclick="event.stopPropagation(); event.stopImmediatePropagation();">
+                            <img src="/static/aprsfi.ico" alt="aprs.fi" style="width:20px;height:20px;margin-left:5px;">
+                          </a>`;
+        const qrzCallsign = fromCallsign.split('-')[0];
+        const qrzLink = `<a href="https://www.qrz.com/db/${qrzCallsign}" target="_blank" style="text-decoration: none;" onclick="event.stopPropagation(); event.stopImmediatePropagation();">
+                            <img src="/static/qrzcom.ico" alt="QRZ.com" style="width:20px;height:20px;margin-left:5px;">
+                          </a>`;
+        externalDiv.innerHTML = loraliveLink + aprsLink + qrzLink;
 
-          cardHeader.appendChild(toggleDiv);
-          cardHeader.appendChild(externalDiv);
-          card.appendChild(cardHeader);
+        cardHeader.appendChild(toggleDiv);
+        cardHeader.appendChild(externalDiv);
+        card.appendChild(cardHeader);
 
-          // Create collapsible card body to show packets.
-          const collapseDiv = document.createElement('div');
-          collapseDiv.className = persistedExpandedStates[fromCallsign] ? 'collapse show' : 'collapse';
-          collapseDiv.id = collapseId;
+        const collapseDiv = document.createElement('div');
+        collapseDiv.id = collapseId;
+        collapseDiv.className = persistedExpandedStates[fromCallsign] ? 'collapse show' : 'collapse';
 
-          const cardBody = document.createElement('div');
-          cardBody.className = 'card-body';
+        const cardBody = document.createElement('div');
+        cardBody.className = 'card-body';
 
-          // Group messages by 'to'
-          Object.keys(callsignData).forEach(toAddr => {
-            const toHeader = document.createElement('h5');
-            toHeader.textContent = `To: ${toAddr}`;
-            cardBody.appendChild(toHeader);
+        Object.keys(filteredData).forEach(toAddr => {
+          const toHeader = document.createElement('h5');
+          toHeader.textContent = `To: ${toAddr}`;
+          cardBody.appendChild(toHeader);
 
-            const listGroup = document.createElement('ul');
-            listGroup.className = 'list-group mb-3';
+          const listGroup = document.createElement('ul');
+          listGroup.className = 'list-group mb-3';
 
-            // Sort the packets so that the most recent is at the top.
-            callsignData[toAddr]
-              .slice()
-              .sort((a, b) => b.receivedAt - a.receivedAt)
-              .forEach((packet) => {
-                const li = document.createElement('li');
-                li.className = 'list-group-item';
-
-                // Compute message text using text, then status, then comment.
-                const packetText = packet.text || packet.status || packet.comment || "";
-                let pathLine = "";
-                if (packet.path && packet.path.length > 0) {
-                  pathLine = `<br><small class="text-muted">${packet.path.join(' &rarr; ')}</small>`;
-                }
-                // Generate a stable ID for this packet's details panel.
-                const detailsId = 'packet-details-' + CryptoJS.SHA256(packet.raw).toString();
-                const detailsExpanded = persistedPacketDetailsStates[detailsId] || false;
-
-                // If the packet has latitude and longitude, add a Google Maps link.
-                let gmapsLink = "";
-                if (packet.latitude && packet.longitude) {
-                  gmapsLink = `<a href="https://www.google.com/maps?q=${packet.latitude},${packet.longitude}" target="_blank" style="text-decoration: none;">
-                                  <img src="/static/gmaps.png" alt="Google Maps" style="width:20px;height:20px;">
-                                </a>`;
-                }
-
-                li.innerHTML = `
-                  <div>
-                    <strong>${packet.timestamp}</strong> - ${packetText}${pathLine}
+          filteredData[toAddr]
+            .slice()
+            .sort((a, b) => b.receivedAt - a.receivedAt)
+            .forEach(packet => {
+              const li = document.createElement('li');
+              li.className = 'list-group-item';
+              const packetText = packet.text || packet.status || packet.comment || "";
+              let pathLine = "";
+              if (packet.path && packet.path.length > 0) {
+                pathLine = `<br><small class="text-muted">${packet.path.join(' &rarr; ')}</small>`;
+              }
+              const detailsId = 'packet-details-' + CryptoJS.SHA256(packet.raw).toString();
+              const detailsExpanded = persistedPacketDetailsStates[detailsId] || false;
+              let gmapsLink = "";
+              if (packet.latitude && packet.longitude) {
+                gmapsLink = `<a href="https://www.google.com/maps?q=${packet.latitude},${packet.longitude}" target="_blank" style="text-decoration: none;">
+                                <img src="/static/gmaps.png" alt="Google Maps" style="width:20px;height:20px;">
+                              </a>`;
+              }
+              li.innerHTML = `
+                <div>
+                  <strong>${packet.timestamp}</strong> - ${packetText}${pathLine}
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                  <button class="btn btn-sm btn-link" type="button" data-bs-toggle="collapse" data-bs-target="#${detailsId}" aria-expanded="${detailsExpanded ? 'true' : 'false'}" aria-controls="${detailsId}">
+                    Show Details
+                  </button>
+                  ${gmapsLink}
+                </div>
+                <div class="${detailsExpanded ? 'collapse show' : 'collapse'}" id="${detailsId}">
+                  <div class="card card-body">
+                    ${renderPacketDetails(packet)}
                   </div>
-                  <div class="d-flex justify-content-between align-items-center">
-                    <button class="btn btn-sm btn-link" type="button" data-bs-toggle="collapse" data-bs-target="#${detailsId}" aria-expanded="${detailsExpanded ? 'true' : 'false'}" aria-controls="${detailsId}">
-                      Show Details
-                    </button>
-                    ${gmapsLink}
-                  </div>
-                  <div class="${detailsExpanded ? 'collapse show' : 'collapse'}" id="${detailsId}">
-                    <div class="card card-body">
-                      ${renderPacketDetails(packet)}
-                    </div>
-                  </div>
-                `;
-                listGroup.appendChild(li);
-              });
-            cardBody.appendChild(listGroup);
-          });
-
-          collapseDiv.appendChild(cardBody);
-          card.appendChild(collapseDiv);
-          container.appendChild(card);
+                </div>
+              `;
+              listGroup.appendChild(li);
+            });
+          cardBody.appendChild(listGroup);
         });
+
+        collapseDiv.appendChild(cardBody);
+        card.appendChild(collapseDiv);
+        container.appendChild(card);
+      });
+
+      const filteredUnknown = unknownPackets.filter(packet => {
+        return !locationOnly || (packet.latitude && packet.longitude);
+      });
+      if (filteredUnknown.length > 0) {
+        let unknownLastTime = 0;
+        filteredUnknown.forEach(packet => {
+          if (packet.receivedAt && packet.receivedAt > unknownLastTime) {
+            unknownLastTime = packet.receivedAt;
+          }
+        });
+        const unknownTimeAgo = unknownLastTime ? formatTimeAgoSingleUnit(unknownLastTime) : '';
+        const unknownCount = filteredUnknown.length;
+
+        const unknownCard = document.createElement('div');
+        unknownCard.className = 'card mb-1';
+
+        const unknownHeader = document.createElement('div');
+        unknownHeader.className = 'card-header';
+        unknownHeader.style.cursor = 'pointer';
+        unknownHeader.setAttribute('data-bs-toggle', 'collapse');
+        unknownHeader.setAttribute('data-bs-target', '#collapse-unknown');
+        unknownHeader.innerHTML = `Unknown <small class="text-muted">${unknownTimeAgo ? '(' + unknownTimeAgo + ', Packets: ' + unknownCount + ')' : '(Packets: ' + unknownCount + ')'}</small>`;
+        unknownCard.appendChild(unknownHeader);
+
+        const collapseUnknown = document.createElement('div');
+        collapseUnknown.id = 'collapse-unknown';
+        // Default to collapsed if no persisted state exists.
+        collapseUnknown.className = (persistedExpandedStates.hasOwnProperty('unknown') ? (persistedExpandedStates['unknown'] ? 'collapse show' : 'collapse') : 'collapse');
+
+        const unknownBody = document.createElement('div');
+        unknownBody.className = 'card-body';
+
+        const unknownList = document.createElement('ul');
+        unknownList.className = 'list-group';
+
+        filteredUnknown.forEach(packet => {
+          const li = document.createElement('li');
+          li.className = 'list-group-item';
+          const receivedTime = new Date(packet.receivedAt).toLocaleString();
+          li.innerHTML = `<strong>${receivedTime}</strong> - ${packet.raw}`;
+          unknownList.appendChild(li);
+        });
+
+        unknownBody.appendChild(unknownList);
+        collapseUnknown.appendChild(unknownBody);
+        unknownCard.appendChild(collapseUnknown);
+        container.appendChild(unknownCard);
+      }
     }
 
     /**
-     * Processes a single packet by grouping it under its 'from' and 'to' fields.
+     * Processes a single packet.
+     * If the packet does not have a "from" field, it is added to the unknownPackets array.
+     * Otherwise, it is grouped into the conversations object.
      */
     function processPacket(packet) {
-      if (!packet.from || !packet.to) {
-        console.warn("Packet missing required fields:", packet);
+      if (!packet.from) {
+        packet.receivedAt = Date.now();
+        unknownPackets.push(packet);
+        saveUnknownPacketsToLocalStorage();
         return;
       }
-      // Record the time this packet was received.
+      if (!packet.to) {
+        console.warn("Packet missing required 'to' field:", packet);
+        return;
+      }
       packet.receivedAt = Date.now();
-
       fetchSymbolIfNeeded(packet.from);
       if (!conversations[packet.from]) {
         conversations[packet.from] = {};
@@ -414,12 +544,19 @@
         conversations[packet.from][packet.to] = [];
       }
       conversations[packet.from][packet.to].push(packet);
-
-      // Save updated conversations to localStorage.
       saveConversationsToLocalStorage();
     }
 
-    // Connect to the local Socket.IO server (same origin)
+    document.getElementById('orderToggleButton').addEventListener('click', function() {
+      orderModeIndex = (orderModeIndex + 1) % orderingModes.length;
+      orderMode = orderingModes[orderModeIndex];
+      this.textContent = orderMode.charAt(0).toUpperCase() + orderMode.slice(1);
+      loadConversations();
+    });
+
+    document.getElementById('locationFilter').addEventListener('change', loadConversations);
+    document.getElementById('callsignFilter').addEventListener('input', loadConversations);
+
     const socket = io('/');
 
     socket.onAny((event, ...args) => {
@@ -451,20 +588,16 @@
     });
 
     document.getElementById('clearButton').addEventListener('click', () => {
-      // Clear the conversations object and remove our namespace from localStorage.
       conversations = {};
+      unknownPackets = [];
       localStorage.removeItem('packets_seen');
+      localStorage.removeItem('unknown_packets');
       loadConversations();
     });
 
-    // Refresh display on filter input change.
-    document.getElementById('callsignFilter').addEventListener('input', loadConversations);
-
-    // On page load, load stored packets (if any) then render.
     loadConversationsFromLocalStorage();
     loadConversations();
 
-    // Update the "time ago" display every second.
     setInterval(updateTimeAgo, 1000);
   </script>
 
