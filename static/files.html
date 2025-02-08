@@ -439,6 +439,20 @@
       }
       
       /**********************************************************************
+       * Global Variables for Serial Data Accumulation
+       **********************************************************************/
+      // Buffer to accumulate incomplete KISS frames from the serial port
+      let kissBuffer = new Uint8Array(0);
+      
+      // Helper function to concatenate two Uint8Arrays
+      function concatUint8Arrays(a, b) {
+        let c = new Uint8Array(a.length + b.length);
+        c.set(a, 0);
+        c.set(b, a.length);
+        return c;
+      }
+      
+      /**********************************************************************
        * Connection Setup: Websockets vs Serial
        **********************************************************************/
       let connectionType = document.getElementById('connectionType').value;  // default is "websockets"
@@ -594,6 +608,7 @@
         }
       });
       
+      // Updated readSerial() function with buffering for complete KISS frames.
       async function readSerial() {
         while (serialPort && serialPort.readable) {
           const reader = serialPort.readable.getReader();
@@ -604,7 +619,26 @@
                 break;
               }
               if (value) {
-                processRawPacket(value);
+                // Append newly received data to the global buffer
+                kissBuffer = concatUint8Arrays(kissBuffer, value);
+                
+                // Process complete KISS frames from the buffer
+                let startIndex = kissBuffer.indexOf(0xC0);
+                while (startIndex !== -1) {
+                  // Look for the next 0xC0 (end flag) after the start flag
+                  let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
+                  if (endIndex === -1) {
+                    // Incomplete frame, wait for more data
+                    break;
+                  }
+                  // Extract a complete frame (including both start and end flags)
+                  const frame = kissBuffer.slice(startIndex, endIndex + 1);
+                  processRawPacket(frame);
+                  // Remove the processed frame from the buffer
+                  kissBuffer = kissBuffer.slice(endIndex + 1);
+                  // Check for another frame in the remaining buffer
+                  startIndex = kissBuffer.indexOf(0xC0);
+                }
               }
             }
           } catch (error) {
