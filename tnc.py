@@ -363,6 +363,15 @@ def encode_callsign(callsign, last=False):
     return encoded
 
 def build_kiss_frame(raw_aprs_packet):
+    # If the packet is already binary and already wrapped in the KISS flag,
+    # return it as-is.
+    if isinstance(raw_aprs_packet, bytes):
+        if len(raw_aprs_packet) >= 2 and raw_aprs_packet[0] == 0xC0 and raw_aprs_packet[-1] == 0xC0:
+            return raw_aprs_packet
+        # Otherwise, decode it to a string so the rest of the function can work.
+        raw_aprs_packet = raw_aprs_packet.decode('utf-8', errors='replace')
+    
+    # Now raw_aprs_packet is a str. (You might want to add further checks here.)
     if ':' not in raw_aprs_packet:
         raise ValueError("Missing ':' in packet.")
 
@@ -379,7 +388,7 @@ def build_kiss_frame(raw_aprs_packet):
     address_fields = [destination, source] + path_list
     encoded_addresses = []
     for i, addr in enumerate(address_fields):
-        encoded_addresses.append(encode_callsign(addr, last=(i==len(address_fields)-1)))
+        encoded_addresses.append(encode_callsign(addr, last=(i == len(address_fields) - 1)))
 
     ax25_frame = bytearray()
     for addr in encoded_addresses:
@@ -390,11 +399,11 @@ def build_kiss_frame(raw_aprs_packet):
     ax25_frame.extend(info_part.encode('ascii', errors='ignore'))
 
     kiss_frame = bytearray()
-    kiss_frame.append(KISS_FLAG)
+    kiss_frame.append(0xC0)
     kiss_frame.append(KISS_CMD_DATA)
     kiss_frame.extend(ax25_frame)
-    kiss_frame.append(KISS_FLAG)
-    return kiss_frame
+    kiss_frame.append(0xC0)
+    return bytes(kiss_frame)
 
 # ------------------------------------------------------------------------------
 #                          LOCATION HELPER FUNCTIONS
@@ -1872,6 +1881,32 @@ def logs_connect():
 @socketio.on('disconnect', namespace='/logs')
 def logs_disconnect():
     print("Client disconnected from /logs")
+
+@socketio.on('send_raw')
+def handle_send_raw(data):
+    global tnc_connection, outgoing_aprs_queue, connection_type
+    # Check that the TNC connection is available (unless you're in APRS-IS mode)
+    if connection_type != 'aprs-is' and (tnc_connection is None or not tnc_connection.is_connected()):
+        emit('send_raw_response', {'error': 'TNC connection not available'})
+        return
+
+    # If data is a dict, extract the 'packet' field; otherwise assume data is raw binary.
+    if isinstance(data, dict):
+        if 'packet' not in data:
+            emit('send_raw_response', {'error': "Missing 'packet' in message"})
+            return
+        raw_pkt = data['packet']
+    elif isinstance(data, (bytes, bytearray)):
+        raw_pkt = data
+    else:
+        emit('send_raw_response', {'error': "Invalid data format"})
+        return
+
+    try:
+        outgoing_aprs_queue.put(raw_pkt)
+        emit('send_raw_response', {'status': 'sent'})
+    except Exception as e:
+        emit('send_raw_response', {'error': str(e)})
 
 # ------------------------------------------------------------------------------
 #                     PROXY (TRANSPARENT TCP BRIDGE) CODE
