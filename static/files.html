@@ -581,7 +581,14 @@
           return;
         }
         
-        // Always send an ACK for every valid packet.
+        // NEW: If we do not have an active transfer (i.e. lost metadata due to refresh)
+        // and the packet is not a header (seq !== 1), then ignore the packet (and do not send an ACK).
+        if (!activeTransfers[sender] && seq !== 1) {
+          console.log(`Received packet ${seq} from sender ${sender} before receiving the header. Ignoring packet.`);
+          return;
+        }
+        
+        // Now send an ACK for every valid packet.
         const ackPacket = buildAckPacket(localCallsign, sender, seq, crcReceived);
         console.log("Sending ACK for packet", seq, "with packet:", ackPacket);
         fetch('/api/send/raw', {
@@ -592,7 +599,6 @@
         .then(() => { console.log("ACK sent for packet", seq); })
         .catch(err => { console.log("Error sending ACK for packet", seq, ":", err); });
         
-        // If the transfer exists and is already marked complete, update the timestamp and return.
         if (activeTransfers[sender] && activeTransfers[sender].completed) {
           activeTransfers[sender].lastUpdate = Date.now();
           console.log("Transfer already completed for sender", sender, "; ACK sent, no further processing.");
