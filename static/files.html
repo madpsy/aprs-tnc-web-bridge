@@ -115,6 +115,7 @@
       /**********************************************************************
        * Utility Functions
        **********************************************************************/
+      // (For the inner file-transfer protocol the callsigns are padded to 9 chars.)
       function padCallsign(cs) {
         return cs.toUpperCase().padEnd(9, ' ');
       }
@@ -124,6 +125,51 @@
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         return chars.charAt(Math.floor(Math.random() * chars.length)) +
                chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      
+      /**********************************************************************
+       * AX.25 Header Helpers
+       **********************************************************************/
+      // Encode a callsign (and optional SSID) as a 7-byte AX.25 address.
+      // For AX.25 the callsign is 6 characters (padded with spaces) and the 7th byte
+      // contains the SSID (0 if none) plus flags. The “isLast” flag indicates that
+      // this is the final address (so the “extension” bit is set).
+      function encodeAX25Address(callsign, isLast) {
+        let call = callsign.toUpperCase();
+        let ssid = 0;
+        if (call.includes('-')) {
+          const parts = call.split('-');
+          call = parts[0];
+          ssid = parseInt(parts[1], 10) || 0;
+        }
+        // AX.25 callsigns are up to 6 characters
+        call = call.padEnd(6, ' ').slice(0, 6);
+        const addr = new Uint8Array(7);
+        for (let i = 0; i < 6; i++) {
+          addr[i] = call.charCodeAt(i) << 1;
+        }
+        // The 7th byte: bits 7-1: SSID (shifted and OR'd with 0x60), bit0 is the extension flag.
+        addr[6] = ((ssid & 0x0F) << 1) | 0x60;
+        if (isLast) {
+          addr[6] |= 0x01;
+        }
+        return addr;
+      }
+      
+      // Build the full AX.25 header (destination, source, control, PID).
+      // In our usage, the destination is the other station (for transmit or ACK),
+      // and there are no digipeaters.
+      function buildAX25Header(source, destination) {
+        const destAddr = encodeAX25Address(destination, false);
+        const srcAddr = encodeAX25Address(source, true);
+        const control = new Uint8Array([0x03]); // UI frame
+        const pid = new Uint8Array([0xF0]);     // No layer 3 protocol
+        const header = new Uint8Array(7 + 7 + 1 + 1);
+        header.set(destAddr, 0);
+        header.set(srcAddr, 7);
+        header.set(control, 14);
+        header.set(pid, 15);
+        return header;
       }
       
       /**********************************************************************
@@ -284,34 +330,45 @@
       updateSentFilesUI();
       
       /**********************************************************************
-       * Packet Building Functions for Raw Binary KISS Frames
+       * Packet Building Functions for AX.25–compatible KISS Frames
        **********************************************************************/
+      // Build a data packet. First the file‑transfer “info” (header string and payload)
+      // is created exactly as before. Then we prepend an AX.25 header (destination, source,
+      // control, PID). (This header is 16 bytes long.) Finally, the KISS framing is applied.
       function buildPacket(sender, receiver, seq, totalChunks, payloadChunk, fileId) {
-        const s = padCallsign(sender);
-        const r = padCallsign(receiver);
         const seqStr = seq.toString().padStart(3, '0');
-        let headerStr = "";
+        let infoStr = "";
         if (seq === 1) {
           const totalStr = totalChunks.toString().padStart(3, '0');
-          headerStr = s + '>' + r + ':' + fileId + ':' + seqStr + '/' + totalStr + ':';
+          infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' + fileId + ':' + seqStr + '/' + totalStr + ':';
         } else {
-          headerStr = s + '>' + r + ':' + fileId + ':' + seqStr + ':';
+          infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' + fileId + ':' + seqStr + ':';
         }
         const encoder = new TextEncoder();
-        const headerBytes = encoder.encode(headerStr);
-        const packetBytes = new Uint8Array(headerBytes.length + payloadChunk.length);
-        packetBytes.set(headerBytes, 0);
-        packetBytes.set(payloadChunk, headerBytes.length);
+        const infoBytes = encoder.encode(infoStr);
+        const innerPayload = new Uint8Array(infoBytes.length + payloadChunk.length);
+        innerPayload.set(infoBytes, 0);
+        innerPayload.set(payloadChunk, infoBytes.length);
+        
+        // Build the AX.25 header (destination = receiver, source = sender).
+        const ax25Header = buildAX25Header(sender, receiver);
+        const packetBytes = new Uint8Array(ax25Header.length + innerPayload.length);
+        packetBytes.set(ax25Header, 0);
+        packetBytes.set(innerPayload, ax25Header.length);
         return packetBytes;
       }
       
+      // Build an ACK packet (using a similar strategy).
       function buildAckPacket(ackSender, ackReceiver, fileId, seq) {
-        const s = padCallsign(ackSender);
-        const r = padCallsign(ackReceiver);
         const seqStr = seq.toString().padStart(3, '0');
-        const ackStr = s + '>' + r + ':' + fileId + ':' + "ACK:" + seqStr;
+        const ackStr = padCallsign(ackSender) + '>' + padCallsign(ackReceiver) + ':' + fileId + ':' + "ACK:" + seqStr;
         const encoder = new TextEncoder();
-        return encoder.encode(ackStr);
+        const infoBytes = encoder.encode(ackStr);
+        const ax25Header = buildAX25Header(ackSender, ackReceiver);
+        const ackPacket = new Uint8Array(ax25Header.length + infoBytes.length);
+        ackPacket.set(ax25Header, 0);
+        ackPacket.set(infoBytes, ax25Header.length);
+        return ackPacket;
       }
       
       // Escape any occurrence of FEND (0xC0) or FESC (0xDB)
@@ -694,7 +751,7 @@
       setInterval(checkInactiveTransfers, 1000);
       
       /**********************************************************************
-       * Packet Processing Function for Raw Binary KISS Frames
+       * Packet Processing Function for AX.25–compatible KISS Frames
        **********************************************************************/
       function processRawPacket(packet) {
         console.log("Processing raw packet:", packet);
@@ -713,17 +770,25 @@
           console.error("Invalid KISS frame: missing framing bytes.");
           return;
         }
+        // Remove KISS framing: skip flag (0xC0) and command (byte 1) and trailing flag.
         const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
+        // AX.25 header is 16 bytes long (destination, source, control, PID)
+        if (ax25Frame.length < 16) {
+          console.error("AX.25 frame too short.");
+          return;
+        }
+        // Extract the info field (our inner file-transfer protocol) which follows the AX.25 header.
+        const infoField = ax25Frame.slice(16);
         let headerLength;
-        const preliminaryHeader = new TextDecoder().decode(ax25Frame.slice(0, 28));
+        const preliminaryHeader = new TextDecoder().decode(infoField.slice(0, 28));
         if (preliminaryHeader.slice(23, 27) === "ACK:") {
           headerLength = 30;
-        } else if (ax25Frame[26] === 0x2F) {
+        } else if (infoField[26] === 0x2F) {
           headerLength = 31;
         } else {
           headerLength = 27;
         }
-        const headerText = new TextDecoder().decode(ax25Frame.slice(0, headerLength));
+        const headerText = new TextDecoder().decode(infoField.slice(0, headerLength));
         if (headerText.slice(23,27) === "ACK:") {
           console.log("Received ACK packet:", headerText);
           const ackFileId = headerText.slice(20,22);
@@ -786,7 +851,7 @@
           }
         }
         console.log("Packet details - Seq:", seq, "Total (if header):", totalChunks);
-        const payloadChunkEscaped = ax25Frame.slice(headerLength);
+        const payloadChunkEscaped = infoField.slice(headerLength);
         const payloadChunk = unescapeKissData(payloadChunkEscaped);
         
         const localCallsign = document.getElementById('senderCallsign').value.trim();
@@ -854,7 +919,7 @@
         if (!activeTransfers[transferKeyFinal].rawBytesReceived) {
           activeTransfers[transferKeyFinal].rawBytesReceived = 0;
         }
-        activeTransfers[transferKeyFinal].rawBytesReceived += ax25Frame.length;
+        activeTransfers[transferKeyFinal].rawBytesReceived += infoField.length;
         activeTransfers[transferKeyFinal].lastUpdate = Date.now();
         const receivedCount = Object.keys(activeTransfers[transferKeyFinal].received).length;
         console.log("Stored packet", seq, "from", transferKeyFinal, "(", receivedCount, "/", activeTransfers[transferKeyFinal].totalChunks, ")");
