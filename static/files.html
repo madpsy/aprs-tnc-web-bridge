@@ -15,6 +15,8 @@
     body { padding: 20px; }
     #status { margin-top: 1rem; font-weight: bold; }
     .progress { height: 20px; margin-bottom: 10px; }
+    /* Make the retries dropdown inline with the compress checkbox */
+    .inline-control { display: inline-block; vertical-align: middle; margin-left: 20px; }
   </style>
 </head>
 <body>
@@ -34,8 +36,24 @@
       <label for="fileInput" class="form-label">File to Send</label>
       <input type="file" id="fileInput" class="form-control">
     </div>
-    <!-- Removed the CRC checkbox -->
-
+    <!-- New Compress Checkbox and Retries Dropdown -->
+    <div class="mb-3">
+      <div class="form-check" style="display: inline-block;">
+        <input type="checkbox" class="form-check-input" id="compressCheckbox" checked>
+        <label class="form-check-label" for="compressCheckbox">Compress</label>
+      </div>
+      <div class="inline-control">
+        <label for="retriesDropdown" class="form-label" style="margin-bottom: 0;">Retries</label>
+        <select id="retriesDropdown" class="form-select" style="width: auto; display: inline-block; margin-left: 10px;">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+      </div>
+    </div>
+    
     <button id="sendFileBtn" class="btn btn-primary">Send File</button>
     <!-- New Cancel Button (initially hidden) -->
     <button id="cancelBtn" class="btn btn-secondary" style="display: none;">Cancel</button>
@@ -77,28 +95,6 @@
        **********************************************************************/
       function padCallsign(cs) {
         return cs.toUpperCase().padEnd(9, ' ');
-      }
-      
-      function uint8ToBase64(u8Arr) {
-        const CHUNK_SIZE = 0x8000;
-        let index = 0, result = '';
-        const len = u8Arr.length;
-        while (index < len) {
-          const slice = u8Arr.subarray(index, Math.min(index + CHUNK_SIZE, len));
-          result += String.fromCharCode.apply(null, slice);
-          index += CHUNK_SIZE;
-        }
-        return btoa(result);
-      }
-      
-      function base64ToUint8Array(base64) {
-        const binaryString = atob(base64);
-        const len = binaryString.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return bytes;
       }
       
       // Generate a random 2-character file ID using case-sensitive alphanumerics.
@@ -247,45 +243,106 @@
       updateSentFilesUI();
       
       /**********************************************************************
-       * Packet Building Functions
+       * Packet Building Functions for Raw Binary KISS Frames
        *
-       * Packet formats:
+       * Packet formats (binary):
        * Header packet (seq === 1):
-       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + "/" + totalChunks(3) + ":" + base64Data
+       *   ASCII header: sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + "/" + totalChunks(3) + ":"
+       *   followed by binary payload (metadata, e.g., "fileName|originalSize|compressedSize|md5|fileId|compressionFlag")
+       *
        * Data packet (seq > 1):
-       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + ":" + base64Data
+       *   ASCII header: sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + ":"
+       *   followed by binary payload (file chunk)
+       *
+       * ACK packet:
+       *   ASCII header: sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + "ACK:" + seq(3)
        **********************************************************************/
+      
       function buildPacket(sender, receiver, seq, totalChunks, payloadChunk, fileId) {
         const s = padCallsign(sender);
         const r = padCallsign(receiver);
         const seqStr = seq.toString().padStart(3, '0');
-        const base64Data = uint8ToBase64(payloadChunk);
-        let packet = "";
+        let headerStr = "";
         if (seq === 1) {
           const totalStr = totalChunks.toString().padStart(3, '0');
-          packet = s + '>' + r + ':' + fileId + ':' + seqStr + '/' + totalStr + ':' + base64Data;
+          headerStr = s + '>' + r + ':' + fileId + ':' + seqStr + '/' + totalStr + ':';
         } else {
-          packet = s + '>' + r + ':' + fileId + ':' + seqStr + ':' + base64Data;
+          headerStr = s + '>' + r + ':' + fileId + ':' + seqStr + ':';
         }
-        if (packet.length > 255) {
-          console.error("Packet size (" + packet.length + " bytes) exceeds 255 bytes. Consider reducing the chunk size.");
-        }
-        return packet;
+        const encoder = new TextEncoder();
+        const headerBytes = encoder.encode(headerStr);
+        const packetBytes = new Uint8Array(headerBytes.length + payloadChunk.length);
+        packetBytes.set(headerBytes, 0);
+        packetBytes.set(payloadChunk, headerBytes.length);
+        return packetBytes;
       }
       
-      // Build ACK packet without CRC.
-      // Format:
-      //   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + "ACK:" + seq(3)
       function buildAckPacket(ackSender, ackReceiver, fileId, seq) {
         const s = padCallsign(ackSender);
         const r = padCallsign(ackReceiver);
         const seqStr = seq.toString().padStart(3, '0');
-        return s + '>' + r + ':' + fileId + ':' + "ACK:" + seqStr;
+        const ackStr = s + '>' + r + ':' + fileId + ':' + "ACK:" + seqStr;
+        const encoder = new TextEncoder();
+        return encoder.encode(ackStr);
+      }
+      
+      // Escape any occurrence of FEND (0xC0) or FESC (0xDB) in the data.
+      function escapeKissData(data) {
+        let output = [];
+        for (let i = 0; i < data.length; i++) {
+          const byte = data[i];
+          if (byte === 0xC0) {
+            // FEND becomes FESC, TFEND (0xDB,0xDC)
+            output.push(0xDB, 0xDC);
+          } else if (byte === 0xDB) {
+            // FESC becomes FESC, TFESC (0xDB,0xDD)
+            output.push(0xDB, 0xDD);
+          } else {
+            output.push(byte);
+          }
+        }
+        return new Uint8Array(output);
+      }
+      
+      // Unescape KISS data: replace FESC,TFEND with FEND and FESC,TFESC with FESC.
+      function unescapeKissData(data) {
+        let output = [];
+        for (let i = 0; i < data.length; i++) {
+          if (data[i] === 0xDB && i + 1 < data.length) {
+            if (data[i+1] === 0xDC) {
+              output.push(0xC0);
+              i++;
+              continue;
+            } else if (data[i+1] === 0xDD) {
+              output.push(0xDB);
+              i++;
+              continue;
+            }
+          }
+          output.push(data[i]);
+        }
+        return new Uint8Array(output);
+      }
+      
+      // Wrap an APRS packet (binary) in KISS framing with proper escaping.
+      function buildKissFrame(aprsPacket) {
+        const escapedPacket = escapeKissData(aprsPacket);
+        const KISS_FLAG = 0xC0;
+        const KISS_CMD_DATA = 0x00;
+        const frame = new Uint8Array(1 + 1 + escapedPacket.length + 1);
+        frame[0] = KISS_FLAG;
+        frame[1] = KISS_CMD_DATA;
+        frame.set(escapedPacket, 2);
+        frame[frame.length - 1] = KISS_FLAG;
+        return frame;
       }
       
       /**********************************************************************
        * Sender-Side Variables and Functions
        **********************************************************************/
+      // We'll set the maximum number of retries based on the user's selection.
+      let maxRetries = 3;  // default value (will be overwritten when "Send File" is clicked)
+      
       let currentFilePackets = [];
       let currentPacketIndex = 0;
       let currentRetries = 0;
@@ -293,8 +350,6 @@
       let fileTransferInProgress = false;
       let ackTimer = null;
       let sentFileStats = null;
-      
-      // Removed per‑chunk CRC flag
       
       function updateStatus(msg) {
         document.getElementById('status').innerText = msg;
@@ -368,15 +423,16 @@
         }
         sentFileStats.bytesSent += packet.length;
         updateStatus(`Sending packet ${currentPacketIndex + 1} of ${currentFilePackets.length} (Retry ${currentRetries})...`);
-        socket.emit('send_raw', { packet: packet });
+        const kissFrame = buildKissFrame(packet);
+        socket.emit('raw_kiss_frame', kissFrame);
         ackTimer = setTimeout(() => {
           currentRetries++;
           totalRetries++;
-          if (currentRetries <= 3) {
-            updateStatus(`No ACK for packet ${currentPacketIndex + 1}. Retrying (${currentRetries}/3)...`);
+          if (currentRetries <= maxRetries) {
+            updateStatus(`No ACK for packet ${currentPacketIndex + 1}. Retrying (${currentRetries}/${maxRetries})...`);
             sendCurrentPacket(sender, receiver);
           } else {
-            updateStatus(`Packet ${currentPacketIndex + 1} failed after 3 retries.`);
+            updateStatus(`Packet ${currentPacketIndex + 1} failed after ${maxRetries} retries.`);
             fileTransferInProgress = false;
             updateSenderProgressUI();
           }
@@ -456,33 +512,49 @@
       setInterval(checkInactiveTransfers, 1000);
       
       /**********************************************************************
-       * Common Packet Processing Function
-       *
-       * ACK packet format:
-       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + "ACK:" + seq(3)
-       *
-       * Data/Metadata packets:
-       *   Header (seq === 1):
-       *     sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + "/" + totalChunks(3) + ":" + base64Data
-       *   Data (seq > 1):
-       *     sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + ":" + base64Data
+       * Common Packet Processing Function for Raw Binary KISS Frames
        **********************************************************************/
       function processRawPacket(packet) {
         console.log("Processing raw packet:", packet);
-        if (typeof packet !== 'string') {
-          console.log("Packet is not a string; ignoring.");
+        let packetBytes;
+        if (typeof packet === 'string') {
+          packetBytes = new TextEncoder().encode(packet);
+        } else if (packet instanceof ArrayBuffer) {
+          packetBytes = new Uint8Array(packet);
+        } else if (packet instanceof Uint8Array) {
+          packetBytes = packet;
+        } else {
+          console.log("Unrecognized packet type; ignoring.");
           return;
         }
-        // --- ACK Packet Detection ---
-        if (packet.slice(23,27) === "ACK:") {
-          console.log("Received ACK packet:", packet);
-          // Extract the fileId from the ACK packet (characters 20-22)
-          const ackFileId = packet.slice(20,22);
+        // Verify KISS framing (must start and end with 0xC0)
+        if (packetBytes[0] !== 0xC0 || packetBytes[packetBytes.length - 1] !== 0xC0) {
+          console.error("Invalid KISS frame: missing framing bytes.");
+          return;
+        }
+        // Remove KISS flag and command byte, and the trailing flag.
+        const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
+        // Determine header length based on packet type.
+        let headerLength;
+        const preliminaryHeader = new TextDecoder().decode(ax25Frame.slice(0, 28));
+        if (preliminaryHeader.slice(23, 27) === "ACK:") {
+          headerLength = 30;
+        } else if (ax25Frame[26] === 0x2F) {
+          headerLength = 31;
+        } else {
+          headerLength = 27;
+        }
+        const headerText = new TextDecoder().decode(ax25Frame.slice(0, headerLength));
+        // ACK packet detection: check if characters 23–26 equal "ACK:"
+        if (headerText.slice(23,27) === "ACK:") {
+          console.log("Received ACK packet:", headerText);
+          const ackFileId = headerText.slice(20,22);
+          const localCallsign = document.getElementById('senderCallsign').value.trim();
           if (!sentFileStats || ackFileId !== sentFileStats.fileId) {
             console.log("Received ACK for a different file transfer (fileId mismatch). Ignoring ACK.");
             return;
           }
-          const ackSeqStr = packet.slice(27,30);
+          const ackSeqStr = headerText.slice(27,30);
           const ackSeq = parseInt(ackSeqStr, 10);
           console.log("ACK details - Seq:", ackSeq);
           if (ackSeq === currentPacketIndex + 1) {
@@ -500,58 +572,48 @@
           return;
         }
         
-        // --- Data/Metadata Packet Processing ---
-        if (packet.indexOf('>') !== 9) {
+        // Data/Metadata Packet Processing
+        if (headerText.indexOf('>') !== 9) {
           console.log("Packet format invalid: missing or misplaced '>'");
           return;
         }
-        const sender = packet.slice(0,9).trim();
-        const receiver = packet.slice(10,19).trim();
-        console.log("Parsed sender:", sender, "Parsed receiver:", receiver);
-        if (packet.charAt(19) !== ':') {
+        const sender = headerText.slice(0,9).trim();
+        const receiver = headerText.slice(10,19).trim();
+        if (headerText.charAt(19) !== ':') {
           console.log("Packet format invalid: missing colon at position 19.");
           return;
         }
-        const fileId = packet.slice(20,22);
-        if (packet.charAt(22) !== ':') {
+        const fileId = headerText.slice(20,22);
+        if (headerText.charAt(22) !== ':') {
           console.log("Packet format invalid: missing colon at position 22 after file ID.");
           return;
         }
-        const seqStr = packet.slice(23,26);
+        const seqStr = headerText.slice(23,26);
         const seq = parseInt(seqStr, 10);
         let totalChunks = null;
-        let base64Data = "";
-        let payloadChunk;
-        
         if (seq === 1) {
-          if (packet.charAt(26) !== '/') {
+          if (headerText.charAt(26) !== '/') {
             console.log("Header packet format invalid: expected '/' at position 26.");
             return;
           }
-          const totalStr = packet.slice(27,30);
+          const totalStr = headerText.slice(27,30);
           totalChunks = parseInt(totalStr, 10);
-          if (packet.charAt(30) !== ':') {
+          if (headerText.charAt(30) !== ':') {
             console.log("Header packet format invalid: missing colon at position 30.");
             return;
           }
-          base64Data = packet.slice(31);
         } else {
-          if (packet.charAt(26) !== ':') {
+          if (headerText.charAt(26) !== ':') {
               console.log("Data packet format invalid: expected colon at position 26.");
               return;
           }
-          base64Data = packet.slice(27);
         }
-        console.log("Packet details - Seq:", seq, "Total (if header):", totalChunks,
-                    "Base64 Data (truncated):", base64Data.substring(0,20) + "...");
-        try {
-          payloadChunk = base64ToUint8Array(base64Data);
-        } catch (e) {
-          console.error("Error decoding Base64 data:", e);
-          return;
-        }
+        console.log("Packet details - Seq:", seq, "Total (if header):", totalChunks);
+        // IMPORTANT: Unescape the payload portion.
+        const payloadChunkEscaped = ax25Frame.slice(headerLength);
+        const payloadChunk = unescapeKissData(payloadChunkEscaped);
+        
         const localCallsign = document.getElementById('senderCallsign').value.trim();
-        console.log("Local callsign is:", localCallsign);
         if (receiver !== localCallsign) {
           console.log("Ignoring packet not intended for me (receiver:", receiver, ", local:", localCallsign, ")");
           return;
@@ -563,11 +625,11 @@
           return;
         }
         
-        // Send ACK packet (no CRC included).
-        const ackPacket = buildAckPacket(localCallsign, sender, fileId, seq);
-        console.log("Sending ACK for packet", seq, "with packet:", ackPacket);
-        socket.emit('send_raw', { packet: ackPacket });
-        console.log("ACK sent for packet", seq);
+        // Send ACK packet.
+        const ackPacketBytes = buildAckPacket(localCallsign, sender, fileId, seq);
+        const ackKissFrame = buildKissFrame(ackPacketBytes);
+        console.log("Sending ACK for packet", seq);
+        socket.emit('raw_kiss_frame', ackKissFrame);
         
         if (activeTransfers[transferKeyFinal] && activeTransfers[transferKeyFinal].completed) {
           activeTransfers[transferKeyFinal].lastUpdate = Date.now();
@@ -575,6 +637,7 @@
           return;
         }
         
+        // Only store the packet if not already present.
         if (!activeTransfers[transferKeyFinal] || seq === 1) {
           console.log("Starting new transfer from sender", sender, "with file ID", fileId);
           activeTransfers[transferKeyFinal] = { 
@@ -585,33 +648,37 @@
             lastUpdate: Date.now()
           };
           if (seq === 1) {
-            const headerText = new TextDecoder().decode(payloadChunk);
-            const parts = headerText.split("|");
-            if (parts.length !== 5) {
-              console.error("Invalid header payload received from sender", sender, "with file ID", fileId);
-              return;
+            const headerPayloadText = new TextDecoder().decode(payloadChunk);
+            const parts = headerPayloadText.split("|");
+            if (parts.length < 6) {
+              // If the compression flag is missing, assume compression is enabled.
+              parts.push("1");
             }
             activeTransfers[transferKeyFinal].header = {
               fileName: parts[0],
               originalSize: parseInt(parts[1], 10),
               compressedSize: parseInt(parts[2], 10),
               md5: parts[3],
-              fileId: parts[4]
+              fileId: parts[4],
+              compression: (parts[5] === "1")
             };
             activeTransfers[transferKeyFinal].totalChunks = totalChunks;
             console.log("Received header from sender", sender, "for file ID", fileId, activeTransfers[transferKeyFinal].header);
           }
+          activeTransfers[transferKeyFinal].received[seq] = payloadChunk;
         } else {
           if (activeTransfers[transferKeyFinal].received[seq]) {
             activeTransfers[transferKeyFinal].duplicateCount++;
             console.log("Duplicate packet", seq, "received from", transferKeyFinal, "Total duplicates:", activeTransfers[transferKeyFinal].duplicateCount);
+            // Do not overwrite the existing packet.
+          } else {
+            activeTransfers[transferKeyFinal].received[seq] = payloadChunk;
           }
         }
-        activeTransfers[transferKeyFinal].received[seq] = payloadChunk;
         if (!activeTransfers[transferKeyFinal].rawBytesReceived) {
           activeTransfers[transferKeyFinal].rawBytesReceived = 0;
         }
-        activeTransfers[transferKeyFinal].rawBytesReceived += packet.length;
+        activeTransfers[transferKeyFinal].rawBytesReceived += ax25Frame.length;
         activeTransfers[transferKeyFinal].lastUpdate = Date.now();
         const receivedCount = Object.keys(activeTransfers[transferKeyFinal].received).length;
         console.log("Stored packet", seq, "from", transferKeyFinal, "(", receivedCount, "/", activeTransfers[transferKeyFinal].totalChunks, ")");
@@ -634,20 +701,29 @@
             }
             dataChunks.push(activeTransfers[transferKeyFinal].received[i]);
           }
-          const totalLength = dataChunks.reduce((acc, cur) => acc + cur.length, 0);
-          const fullCompressed = new Uint8Array(totalLength);
+          let totalLength = 0;
+          dataChunks.forEach(chunk => { totalLength += chunk.length; });
+          let fullCompressed = new Uint8Array(totalLength);
           let offset = 0;
           dataChunks.forEach(chunk => {
             fullCompressed.set(chunk, offset);
             offset += chunk.length;
           });
           console.log("Reassembled compressed file length:", fullCompressed.length);
+          if (fullCompressed.length !== activeTransfers[transferKeyFinal].header.compressedSize) {
+            console.warn("Reassembled length (" + fullCompressed.length +
+              ") does not match expected compressed size (" + activeTransfers[transferKeyFinal].header.compressedSize + ").");
+          }
           let decompressed;
-          try {
-            decompressed = pako.inflate(fullCompressed);
-          } catch (err) {
-            console.error("Error decompressing full file for", transferKeyFinal, ":", err);
-            return;
+          if (activeTransfers[transferKeyFinal].header.compression) {
+            try {
+              decompressed = pako.inflate(fullCompressed);
+            } catch (err) {
+              console.error("Error decompressing full file for", transferKeyFinal, ":", err);
+              return;
+            }
+          } else {
+            decompressed = fullCompressed;
           }
           console.log("Decompressed file length:", decompressed.length);
           const blob = new Blob([decompressed]);
@@ -682,11 +758,12 @@
           console.log("File transfer complete for", transferKeyFinal);
           activeTransfers[transferKeyFinal].completed = true;
           activeTransfers[transferKeyFinal].completionTime = Date.now();
+          // Increase the time before clearing completed transfers (from 30 sec to 60 sec)
           setTimeout(() => {
             console.log("Clearing completed transfer for", transferKeyFinal);
             delete activeTransfers[transferKeyFinal];
             updateReceiverProgressUI();
-          }, 30000);
+          }, 60000);
           updateReceiverProgressUI();
         }
       }
@@ -696,7 +773,9 @@
        **********************************************************************/
       const socket = io('/');
       socket.onAny((event, ...args) => {
-        console.log('Socket event:', event, args);
+        if (event === "raw_kiss_frame") {
+          console.log('Socket event:', event, args);
+        }
       });
       socket.on('connect', () => {
         console.log("Socket connected, id:", socket.id);
@@ -704,13 +783,9 @@
       socket.on('connect_error', (err) => {
         console.error("Socket connection error:", err);
       });
-      socket.on('aprs_packet', (data) => {
-        console.log("Received aprs_packet event:", data);
-        const packet = (typeof data === 'object' && data.raw) ? data.raw : data;
-        processRawPacket(packet);
-      });
-      socket.on('raw_packet', (packet) => {
-        console.log("Received raw_packet event:", packet);
+      // Only listen for raw_kiss_frame events
+      socket.on('raw_kiss_frame', (packet) => {
+        console.log("Received raw_kiss_frame event:", packet);
         processRawPacket(packet);
       });
       
@@ -725,33 +800,40 @@
           alert("Please enter your callsign, receiver callsign, and select a file.");
           return;
         }
+        // Read the state of the "Compress" checkbox (default on)
+        const compress = document.getElementById('compressCheckbox').checked;
+        // Read the selected number of retries from the dropdown.
+        maxRetries = parseInt(document.getElementById('retriesDropdown').value, 10);
         const file = fileInput.files[0];
-        // Removed reading of the CRC checkbox value.
         const fileId = generateFileId();
         const reader = new FileReader();
         reader.onload = function(e) {
           const arrayBuffer = e.target.result;
           const fileData = new Uint8Array(arrayBuffer);
-          let compressed;
-          try {
-            compressed = pako.deflate(fileData, { level: 9 });
-          } catch (err) {
-            updateStatus("Compression error: " + err);
-            return;
+          let finalData;
+          if (compress) {
+            try {
+              finalData = pako.deflate(fileData, { level: 9 });
+            } catch (err) {
+              updateStatus("Compression error: " + err);
+              return;
+            }
+          } else {
+            finalData = fileData;
           }
           const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
-          const fileDataChunksCount = Math.ceil(compressed.length / 165);
+          const fileDataChunksCount = Math.ceil(finalData.length / 165);
           const totalPackets = fileDataChunksCount + 1;
           currentFilePackets = [];
-          // Header metadata: fileName|originalSize|compressedSize|md5|fileId
-          const headerStr = file.name + "|" + fileData.length + "|" + compressed.length + "|" + md5 + "|" + fileId;
+          // Header metadata: fileName|originalSize|finalDataLength|md5|fileId|compressionFlag (1 for compress, 0 for uncompressed)
+          const headerStr = file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (compress ? "1" : "0");
           const headerPayload = new TextEncoder().encode(headerStr);
           const headerPacket = buildPacket(sender, receiver, 1, totalPackets, headerPayload, fileId);
           currentFilePackets.push(headerPacket);
           for (let i = 0; i < fileDataChunksCount; i++) {
             const start = i * 165;
-            const end = Math.min(start + 165, compressed.length);
-            const chunk = compressed.slice(start, end);
+            const end = Math.min(start + 165, finalData.length);
+            const chunk = finalData.slice(start, end);
             const packet = buildPacket(sender, receiver, i + 2, totalPackets, chunk, fileId);
             currentFilePackets.push(packet);
           }
@@ -759,20 +841,19 @@
           currentRetries = 0;
           totalRetries = 0;
           fileTransferInProgress = true;
-          // Save fileId into sentFileStats so that updateSenderProgressUI() can display it.
           sentFileStats = {
             fileName: file.name,
             receiver: receiver,
             originalSize: fileData.length,
-            compressedSize: compressed.length,
+            compressedSize: finalData.length,
             startTime: Date.now(),
             totalRetries: 0,
             bytesSent: 0,
             totalPackets: currentFilePackets.length,
             fileId: fileId
           };
-          updateStatus(`File compressed from ${fileData.length} bytes to ${compressed.length} bytes.
-                       Transfer will begin with a header packet containing file metadata and MD5 checksum.
+          updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes.
+                       Transfer will begin with a header packet containing file metadata, MD5 checksum, and compression flag.
                        File ID: ${fileId}`);
           updateSenderProgressUI();
           sendCurrentPacket(sender, receiver);
