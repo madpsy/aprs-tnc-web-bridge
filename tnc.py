@@ -570,6 +570,9 @@ def loopback_tx_packet(raw_aprs_packet, igate_callsign=None):
 #                           KISS Frame Handler
 # ------------------------------------------------------------------------------
 def handle_kiss_frame(frame, filename, no_log=False, igate_callsign=None):
+    # Immediately broadcast the raw frame (reconstruct it with start/stop flags)
+    raw_frame = bytes([KISS_FLAG]) + frame + bytes([KISS_FLAG])
+    socketio.emit('raw_kiss_frame', raw_frame)
     if len(frame) < 1:
         if config.get('debug'):
             print("KISS frame too short.")
@@ -1907,6 +1910,31 @@ def handle_send_raw(data):
         emit('send_raw_response', {'status': 'sent'})
     except Exception as e:
         emit('send_raw_response', {'error': str(e)})
+
+@socketio.on('raw_kiss_frame')
+def handle_kiss_frame_ws(data):
+    """
+    Expects 'data' to contain the raw KISS frame to be sent directly
+    to the TNC. This bypasses any APRS parsing or frame-building logic.
+    """
+    global tnc_connection
+
+    # Check if the TNC connection is available and connected.
+    if not tnc_connection or not tnc_connection.is_connected():
+        socketio.emit('kiss_frame_response', {'error': 'TNC connection not available'})
+        return
+
+    # Depending on how the client sends the data, it might come in as:
+    #   - A bytes object, or
+    #   - A string (e.g., hex-encoded or base64-encoded).
+    #
+    # For this example, we assume that the client is sending the raw frame as binary.
+    try:
+        # Directly send the raw frame to the TNC.
+        tnc_connection.sendall(data)
+        socketio.emit('kiss_frame_response', {'status': 'sent'})
+    except Exception as e:
+        socketio.emit('kiss_frame_response', {'error': str(e)})
 
 # ------------------------------------------------------------------------------
 #                     PROXY (TRANSPARENT TCP BRIDGE) CODE
