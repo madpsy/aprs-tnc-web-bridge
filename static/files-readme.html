@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>File Transfer Protocol Explanation & Examples</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      margin: 20px;
+      background: #f9f9f9;
+      color: #333;
+    }
+    h1, h2, h3 {
+      color: #222;
+    }
+    code, pre {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-family: Consolas, monospace;
+    }
+    .section {
+      margin-bottom: 30px;
+      padding: 15px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    .example {
+      margin: 10px 0;
+      padding: 10px;
+      background: #f0f0f0;
+      border-left: 4px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+  <h1>File Transfer Protocol Overview</h1>
+  <p>This document explains how our file transfer protocol works. It covers:</p>
+  <ul>
+    <li>KISS Compatibility</li>
+    <li>AX.25 Protocol</li>
+    <li>Metadata Frame</li>
+    <li>Compression</li>
+    <li>Retries and ACK Logic</li>
+    <li>Sequencing</li>
+    <li>Serial and WebSocket Support</li>
+  </ul>
+
+  <div class="section">
+    <h2>KISS Compatibility</h2>
+    <p>
+      The protocol uses the <strong>KISS</strong> (Keep It Simple, Stupid) framing format to encapsulate all transmitted packets. Every packet is wrapped with:
+    </p>
+    <ul>
+      <li>A <code>start flag</code> (<code>0xC0</code>) at the beginning</li>
+      <li>A <code>command byte</code> (typically <code>0x00</code> for data) immediately after the start flag</li>
+      <li>The escaped payload data</li>
+      <li>An <code>end flag</code> (<code>0xC0</code>) at the end</li>
+    </ul>
+    <p>
+      <strong>Example:</strong> A complete KISS frame might look like this in hexadecimal:
+    </p>
+    <pre>
+C0 00  ... escaped payload ...  C0
+    </pre>
+    <p>
+      On the receiver side, data is accumulated until both a starting and an ending <code>0xC0</code> are present so that only complete frames are processed.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>AX.25 Protocol</h2>
+    <p>
+      The protocol leverages the <strong>AX.25</strong> addressing scheme, which is common in amateur radio:
+    </p>
+    <ul>
+      <li>Each callsign is encoded in 7 bytes (6 bytes for the callsign, padded with spaces, and 1 byte for the SSID plus flags).</li>
+      <li>An AX.25 header is constructed by combining:
+        <ul>
+          <li><strong>Destination Address:</strong> The receiver’s callsign</li>
+          <li><strong>Source Address:</strong> The sender’s callsign</li>
+          <li>A <strong>Control</strong> byte (<code>0x03</code> for UI frames)</li>
+          <li>A <strong>PID</strong> (<code>0xF0</code> for no layer‑3 protocol)</li>
+        </ul>
+      </li>
+      <li>This header (16 bytes) is then prepended to every data packet.</li>
+    </ul>
+    <p>
+      <strong>Example Header (Textual Representation):</strong>
+    </p>
+    <div class="example">
+      <pre>
+Destination: "MYSTATION" (padded to 9 chars: "MYSTATION")
+Source:      "N0CALL"    (padded to 9 chars: "N0CALL   ")
+Control:     03
+PID:         F0
+    </pre>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Metadata Frame</h2>
+    <p>
+      The <strong>metadata frame</strong> is the first packet in every file transfer (sequence number 1) and contains important file information:
+    </p>
+    <ul>
+      <li><strong>File Name</strong></li>
+      <li><strong>Original File Size</strong></li>
+      <li><strong>Compressed File Size</strong></li>
+      <li><strong>MD5 Checksum</strong> of the original file</li>
+      <li><strong>File ID:</strong> a 2-character identifier</li>
+      <li><strong>Compression Flag:</strong> indicating whether the file is compressed</li>
+    </ul>
+    <p>
+      The metadata frame is built by first constructing a header string that includes the sender's and receiver's callsigns, file ID, and sequence information. For a metadata frame, the format is:
+    </p>
+    <pre>
+[padded sender]>[padded receiver]:[fileId]:[seq]/[totalPackets]:
+    </pre>
+    <p>
+      This is immediately followed by the metadata payload, which is a string containing file details delimited by pipes (|).
+    </p>
+    <p>
+      <strong>Example Metadata Frame:</strong>
+    </p>
+    <p>
+      Suppose we have the following:
+    </p>
+    <ul>
+      <li>Sender: <code>N0CALL</code></li>
+      <li>Receiver: <code>MYSTATION</code></li>
+      <li>File ID: <code>AB</code></li>
+      <li>Sequence: <code>001</code> (for metadata)</li>
+      <li>Total Packets: <code>005</code></li>
+      <li>Metadata payload: <code>FILE.TXT|1024|512|d41d8cd98f00b204e9800998ecf8427e|AB|1</code></li>
+    </ul>
+    <p>
+      The header string would be:
+    </p>
+    <pre>
+N0CALL   >MYSTATION:AB:001/005:
+    </pre>
+    <p>
+      And the full metadata frame (before AX.25 header and KISS framing) would be:
+    </p>
+    <pre>
+N0CALL   >MYSTATION:AB:001/005:FILE.TXT|1024|512|d41d8cd98f00b204e9800998ecf8427e|AB|1
+    </pre>
+    <p>
+      This string is then prepended by the 16-byte AX.25 header and wrapped in a KISS frame.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Data Frames</h2>
+    <p>
+      Data frames carry chunks of the (optionally compressed) file data. For data frames (sequence numbers 2 and up), the header is slightly simpler:
+    </p>
+    <pre>
+[padded sender]>[padded receiver]:[fileId]:[seq]:
+    </pre>
+    <p>
+      <strong>Example Data Frame:</strong>
+    </p>
+    <p>
+      Continuing the previous example, the second packet (sequence 002) might have:
+    </p>
+    <ul>
+      <li>Sender: <code>N0CALL</code></li>
+      <li>Receiver: <code>MYSTATION</code></li>
+      <li>File ID: <code>AB</code></li>
+      <li>Sequence: <code>002</code></li>
+      <li>Payload: a binary chunk of file data (e.g., 165 bytes of compressed data)</li>
+    </ul>
+    <p>
+      The header string would be:
+    </p>
+    <pre>
+N0CALL   >MYSTATION:AB:002:
+    </pre>
+    <p>
+      Followed by the binary payload. As with the metadata frame, this entire packet is prefixed with the AX.25 header and wrapped in a KISS frame.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Compression</h2>
+    <p>
+      Compression is optional and uses the <code>deflate</code> algorithm (via the <code>pako</code> library). If enabled:
+    </p>
+    <ul>
+      <li>The file is compressed before it is split into packets.</li>
+      <li>The metadata frame indicates the original and compressed sizes as well as a flag (e.g., "1") showing that compression is active.</li>
+      <li>On the receiving end, if the metadata indicates compression, the reassembled file is decompressed using <code>inflate</code>.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>Retries and ACK Logic</h2>
+    <p>
+      Reliable transfer is achieved using a simple acknowledgment (ACK) mechanism:
+    </p>
+    <ol>
+      <li>The sender transmits a packet (wrapped in a KISS frame).</li>
+      <li>The receiver processes the packet and sends back an ACK packet. The ACK contains the file ID and the sequence number (prefixed with <code>"ACK:"</code> in the header).</li>
+      <li>If the sender does not receive an ACK within a timeout period (e.g., 10 seconds), it retransmits the packet. A maximum number of retries (configurable) is enforced.</li>
+    </ol>
+    <p>
+      <strong>ACK Example:</strong> For the data packet with header:
+    </p>
+    <pre>
+N0CALL   >MYSTATION:AB:002:
+    </pre>
+    <p>
+      The ACK packet header (constructed by the receiver) would be:
+    </p>
+    <pre>
+MYSTATION> N0CALL:AB:ACK:002
+    </pre>
+    <p>
+      (Note: The ACK header reverses the roles of sender and receiver, and includes the "ACK:" marker.)
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Sequencing</h2>
+    <p>
+      The protocol relies on sequential numbering to ensure that packets are reassembled in order:
+    </p>
+    <ul>
+      <li><strong>Sequence 1:</strong> Contains metadata.</li>
+      <li><strong>Sequence 2 and onwards:</strong> Contain file data chunks.</li>
+    </ul>
+    <p>
+      The sequence numbers are encoded as 3-digit numbers (e.g., 001, 002, ...), and are embedded in the header.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Serial and WebSocket Support</h2>
+    <p>
+      The protocol is transport agnostic. Two modes are supported:
+    </p>
+    <ul>
+      <li>
+        <strong>Serial:</strong> Uses the Web Serial API for direct communication over serial ports. Special buffering logic ensures that incomplete KISS frames (common in serial reads) are accumulated until a complete frame is available.
+      </li>
+      <li>
+        <strong>WebSockets:</strong> Uses Socket.IO to transmit frames over a network connection. Since WebSocket messages are delivered as complete units, less buffering is needed.
+      </li>
+    </ul>
+    <p>
+      Regardless of the transport, every packet is constructed identically – first an AX.25 header is attached, then the packet is wrapped in a KISS frame.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Summary</h2>
+    <p>
+      The protocol works as follows:
+    </p>
+    <ol>
+      <li>
+        <strong>Preparation:</strong> The file is optionally compressed. A metadata frame is constructed (sequence 1) that contains the file name, sizes, checksum, file ID, and a compression flag.
+      </li>
+      <li>
+        <strong>Packetization:</strong> The file (or its compressed version) is split into sequential packets. Each packet contains a header (with sender, receiver, file ID, and sequence number) followed by payload data.
+      </li>
+      <li>
+        <strong>Framing:</strong> An AX.25 header is prepended, and the complete packet is wrapped in a KISS frame (with start and end flag bytes).
+      </li>
+      <li>
+        <strong>Transmission:</strong> Packets are sent over either a serial or WebSocket connection. The sender waits for an ACK for each packet, retransmitting if necessary.
+      </li>
+      <li>
+        <strong>Reception:</strong> The receiver reassembles the packets using sequence numbers, checks for duplicates, and once all packets are received, reconstructs (and decompresses, if needed) the file.
+      </li>
+    </ol>
+    <p>
+      This layered approach—with KISS framing, AX.25 addressing, metadata, compression, robust error handling (via ACKs and retries), and support for multiple transports—ensures reliable file transfers.
+    </p>
+  </div>
+</body>
+</html>
+
