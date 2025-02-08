@@ -1,0 +1,1189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>KISS File Transfer</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Socket.IO -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
+  <!-- CryptoJS for MD5 checksum -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <!-- Pako for compression/decompression -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+  <style>
+    body { padding: 20px; }
+    #status { margin-top: 1rem; font-weight: bold; }
+    .progress { height: 20px; margin-bottom: 10px; }
+    /* Make the retries dropdown inline with the compress checkbox */
+    .inline-control { display: inline-block; vertical-align: middle; margin-left: 20px; }
+    /* Style for the connection status dot */
+    #connectionStatusDot {
+      display: inline-block;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background-color: red;
+      margin-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>
+      KISS File Transfer
+      <span id="connectionStatusDot"></span>
+    </h1>
+    
+    <!-- Connection Type Dropdown (default is websockets) -->
+    <div class="mb-3">
+      <label for="connectionType" class="form-label">Connection Type</label>
+      <select id="connectionType" class="form-select">
+        <option value="websockets" selected>Websockets</option>
+        <option value="serial">Serial</option>
+      </select>
+    </div>
+    
+    <!-- Serial Settings: shown only when Serial is selected -->
+    <div id="serialSettings" style="display: none;">
+      <div class="mb-3">
+        <label for="baudRate" class="form-label">Baud Rate</label>
+        <select id="baudRate" class="form-select">
+          <option value="9600">9600</option>
+          <option value="14400">14400</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200" selected>115200</option>
+        </select>
+      </div>
+      <button id="serialConnectBtn" class="btn btn-primary">Connect</button>
+      <button id="serialDisconnectBtn" class="btn btn-secondary" style="display: none;">Disconnect</button>
+    </div>
+    
+    <!-- User Settings -->
+    <div class="mb-3">
+      <br>
+      <label for="senderCallsign" class="form-label">Your Callsign</label>
+      <input type="text" id="senderCallsign" class="form-control" placeholder="Enter your callsign">
+    </div>
+    <div class="mb-3">
+      <label for="receiverCallsign" class="form-label">Receiver Callsign (for sending)</label>
+      <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
+    </div>
+    <div class="mb-3">
+      <label for="fileInput" class="form-label">File to Send</label>
+      <input type="file" id="fileInput" class="form-control">
+    </div>
+    
+    <!-- Compress Checkbox and Retries Dropdown -->
+    <div class="mb-3">
+      <div class="form-check" style="display: inline-block;">
+        <input type="checkbox" class="form-check-input" id="compressCheckbox" checked>
+        <label class="form-check-label" for="compressCheckbox">Compress</label>
+      </div>
+      <div class="inline-control">
+        <label for="retriesDropdown" class="form-label" style="margin-bottom: 0;">Retries</label>
+        <select id="retriesDropdown" class="form-select" style="width: auto; display: inline-block; margin-left: 10px;">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+      </div>
+    </div>
+    
+    <button id="sendFileBtn" class="btn btn-primary">Send File</button>
+    <!-- Cancel Button (hidden by default) -->
+    <button id="cancelBtn" class="btn btn-secondary" style="display: none;">Cancel</button>
+    <div id="status"></div>
+    
+    <hr>
+    <h2>Sender Progress</h2>
+    <div id="senderProgress">
+      <p>No file being sent.</p>
+    </div>
+    
+    <hr>
+    <h2>Sent Files</h2>
+    <div id="sentFiles">
+      <p>No files sent yet.</p>
+    </div>
+    
+    <hr>
+    <h2>Receiver Progress</h2>
+    <div id="receiverProgress">
+      <p>No active transfers.</p>
+    </div>
+    
+    <hr>
+    <h2>Received Files</h2>
+    <div id="receivedFiles">
+      <p>No files received yet.</p>
+    </div>
+  </div>
+  
+  <!-- Bootstrap Bundle -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+
+      /**********************************************************************
+       * Utility Functions
+       **********************************************************************/
+      // (For the inner file-transfer protocol the callsigns are padded to 9 chars.)
+      function padCallsign(cs) {
+        return cs.toUpperCase().padEnd(9, ' ');
+      }
+      
+      // Generate a random 2-character file ID using alphanumerics.
+      function generateFileId() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        return chars.charAt(Math.floor(Math.random() * chars.length)) +
+               chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      
+      /**********************************************************************
+       * AX.25 Header Helpers
+       **********************************************************************/
+      // Encode a callsign (and optional SSID) as a 7-byte AX.25 address.
+      // For AX.25 the callsign is 6 characters (padded with spaces) and the 7th byte
+      // contains the SSID (0 if none) plus flags. The “isLast” flag indicates that
+      // this is the final address (so the “extension” bit is set).
+      function encodeAX25Address(callsign, isLast) {
+        let call = callsign.toUpperCase();
+        let ssid = 0;
+        if (call.includes('-')) {
+          const parts = call.split('-');
+          call = parts[0];
+          ssid = parseInt(parts[1], 10) || 0;
+        }
+        // AX.25 callsigns are up to 6 characters
+        call = call.padEnd(6, ' ').slice(0, 6);
+        const addr = new Uint8Array(7);
+        for (let i = 0; i < 6; i++) {
+          addr[i] = call.charCodeAt(i) << 1;
+        }
+        // The 7th byte: bits 7-1: SSID (shifted and OR'd with 0x60), bit0 is the extension flag.
+        addr[6] = ((ssid & 0x0F) << 1) | 0x60;
+        if (isLast) {
+          addr[6] |= 0x01;
+        }
+        return addr;
+      }
+      
+      // Build the full AX.25 header (destination, source, control, PID).
+      // In our usage, the destination is the other station (for transmit or ACK),
+      // and there are no digipeaters.
+      function buildAX25Header(source, destination) {
+        const destAddr = encodeAX25Address(destination, false);
+        const srcAddr = encodeAX25Address(source, true);
+        const control = new Uint8Array([0x03]); // UI frame
+        const pid = new Uint8Array([0xF0]);     // No layer 3 protocol
+        const header = new Uint8Array(7 + 7 + 1 + 1);
+        header.set(destAddr, 0);
+        header.set(srcAddr, 7);
+        header.set(control, 14);
+        header.set(pid, 15);
+        return header;
+      }
+      
+      /**********************************************************************
+       * Persistence Functions for Files
+       **********************************************************************/
+      function saveReceivedFilesToLocalStorage(filesArray) {
+        try {
+          localStorage.setItem("receivedFiles", JSON.stringify(filesArray));
+        } catch (e) {
+          console.error("Error saving received files:", e);
+        }
+      }
+      
+      function loadReceivedFilesFromLocalStorage() {
+        const data = localStorage.getItem("receivedFiles");
+        if (data) {
+          try {
+            return JSON.parse(data);
+          } catch (e) {
+            console.error("Error parsing received files:", e);
+          }
+        }
+        return [];
+      }
+      
+      function saveSentFilesToLocalStorage(filesArray) {
+        try {
+          localStorage.setItem("sentFiles", JSON.stringify(filesArray));
+        } catch (e) {
+          console.error("Error saving sent files:", e);
+        }
+      }
+      
+      function loadSentFilesFromLocalStorage() {
+        const data = localStorage.getItem("sentFiles");
+        if (data) {
+          try {
+            return JSON.parse(data);
+          } catch (e) {
+            console.error("Error parsing sent files:", e);
+          }
+        }
+        return [];
+      }
+      
+      /**********************************************************************
+       * UI Update Functions
+       **********************************************************************/
+      function updateReceivedFilesUI() {
+        const container = document.getElementById('receivedFiles');
+        const files = persistentReceivedFiles;
+        if (files.length === 0) {
+          container.innerHTML = "<p>No files received yet.</p>";
+          return;
+        }
+        let html = `<table class="table table-striped">
+                      <thead>
+                        <tr>
+                          <th>Date/Time</th><th>Sender</th><th>File Name</th>
+                          <th>Original Size</th><th>Compressed Size</th><th>Size (decompressed)</th>
+                          <th>Elapsed Time (s)</th><th>Speed (Bytes/s)</th>
+                          <th>Duplicates</th><th>Checksum</th><th>Download</th><th>Delete</th>
+                        </tr>
+                      </thead>
+                      <tbody>`;
+        files.forEach((file, index) => {
+          const checksumIcon = file.checksumMatch 
+            ? '<span style="color:green;">&#10004;</span>' 
+            : '<span style="color:red;">&#10008;</span>';
+          const elapsedSec = file.elapsed / 1000;
+          const speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
+          const dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
+          html += `<tr>
+                     <td>${new Date(file.timestamp).toLocaleString()}</td>
+                     <td>${file.sender}</td>
+                     <td>${file.fileName}</td>
+                     <td>${file.originalSize} bytes</td>
+                     <td>${file.compressedSize} bytes</td>
+                     <td>${file.size} bytes</td>
+                     <td>${(elapsedSec).toFixed(2)}</td>
+                     <td>${speed}</td>
+                     <td>${file.duplicates} (${dupPercent}%)</td>
+                     <td>${checksumIcon}</td>
+                     <td><button class="btn btn-success btn-sm" onclick="downloadReceivedFile(${index})">Download</button></td>
+                     <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFile(${index})">Delete</button></td>
+                   </tr>`;
+        });
+        html += "</tbody></table>";
+        container.innerHTML = html;
+      }
+      
+      function updateSentFilesUI() {
+        const container = document.getElementById('sentFiles');
+        const files = persistentSentFiles;
+        if (files.length === 0) {
+          container.innerHTML = "<p>No files sent yet.</p>";
+          return;
+        }
+        let html = `<table class="table table-striped">
+                      <thead>
+                        <tr>
+                          <th>Date/Time</th><th>Receiver</th><th>File Name</th>
+                          <th>Original Size</th><th>Compressed Size</th>
+                          <th>Retries</th><th>Total Time (s)</th><th>Speed (Bytes/s)</th><th>Clear</th>
+                        </tr>
+                      </thead>
+                      <tbody>`;
+        files.forEach((stat, index) => {
+          const totalTime = parseFloat(stat.totalTime);
+          const speed = totalTime > 0 ? Math.floor(stat.bytesSent / totalTime) : 0;
+          const retryPercent = stat.totalPackets ? Math.round(stat.totalRetries / stat.totalPackets * 100) : "0";
+          html += `<tr>
+                     <td>${new Date(stat.timestamp).toLocaleString()}</td>
+                     <td>${stat.receiver || ""}</td>
+                     <td>${stat.fileName}</td>
+                     <td>${stat.originalSize} bytes</td>
+                     <td>${stat.compressedSize} bytes</td>
+                     <td>${stat.totalRetries} (${retryPercent}%)</td>
+                     <td>${stat.totalTime}</td>
+                     <td>${speed}</td>
+                     <td><button class="btn btn-warning btn-sm" onclick="clearSentFile(${index})">Clear</button></td>
+                   </tr>`;
+        });
+        html += "</tbody></table>";
+        container.innerHTML = html;
+      }
+      
+      window.downloadReceivedFile = function(index) {
+        const file = persistentReceivedFiles[index];
+        if (!file) return;
+        const a = document.createElement('a');
+        a.href = file.dataUrl;
+        a.download = file.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      };
+      
+      window.deleteReceivedFile = function(index) {
+        persistentReceivedFiles.splice(index, 1);
+        saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+        updateReceivedFilesUI();
+      };
+      
+      window.clearSentFile = function(index) {
+        persistentSentFiles.splice(index, 1);
+        saveSentFilesToLocalStorage(persistentSentFiles);
+        updateSentFilesUI();
+      };
+      
+      /**********************************************************************
+       * Global Persistent Variables
+       **********************************************************************/
+      let persistentReceivedFiles = loadReceivedFilesFromLocalStorage();
+      let persistentSentFiles = loadSentFilesFromLocalStorage();
+      
+      updateReceivedFilesUI();
+      updateSentFilesUI();
+      
+      /**********************************************************************
+       * Packet Building Functions for AX.25–compatible KISS Frames
+       **********************************************************************/
+      // Build a data packet. First the file‑transfer “info” (header string and payload)
+      // is created exactly as before. Then we prepend an AX.25 header (destination, source,
+      // control, PID). (This header is 16 bytes long.) Finally, the KISS framing is applied.
+      function buildPacket(sender, receiver, seq, totalChunks, payloadChunk, fileId) {
+        const seqStr = seq.toString().padStart(3, '0');
+        let infoStr = "";
+        if (seq === 1) {
+          const totalStr = totalChunks.toString().padStart(3, '0');
+          infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' + fileId + ':' + seqStr + '/' + totalStr + ':';
+        } else {
+          infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' + fileId + ':' + seqStr + ':';
+        }
+        const encoder = new TextEncoder();
+        const infoBytes = encoder.encode(infoStr);
+        const innerPayload = new Uint8Array(infoBytes.length + payloadChunk.length);
+        innerPayload.set(infoBytes, 0);
+        innerPayload.set(payloadChunk, infoBytes.length);
+        
+        // Build the AX.25 header (destination = receiver, source = sender).
+        const ax25Header = buildAX25Header(sender, receiver);
+        const packetBytes = new Uint8Array(ax25Header.length + innerPayload.length);
+        packetBytes.set(ax25Header, 0);
+        packetBytes.set(innerPayload, ax25Header.length);
+        return packetBytes;
+      }
+      
+      // Build an ACK packet (using a similar strategy).
+      function buildAckPacket(ackSender, ackReceiver, fileId, seq) {
+        const seqStr = seq.toString().padStart(3, '0');
+        const ackStr = padCallsign(ackSender) + '>' + padCallsign(ackReceiver) + ':' + fileId + ':' + "ACK:" + seqStr;
+        const encoder = new TextEncoder();
+        const infoBytes = encoder.encode(ackStr);
+        const ax25Header = buildAX25Header(ackSender, ackReceiver);
+        const ackPacket = new Uint8Array(ax25Header.length + infoBytes.length);
+        ackPacket.set(ax25Header, 0);
+        ackPacket.set(infoBytes, ax25Header.length);
+        return ackPacket;
+      }
+      
+      // Escape any occurrence of FEND (0xC0) or FESC (0xDB)
+      function escapeKissData(data) {
+        let output = [];
+        for (let i = 0; i < data.length; i++) {
+          const byte = data[i];
+          if (byte === 0xC0) {
+            output.push(0xDB, 0xDC);
+          } else if (byte === 0xDB) {
+            output.push(0xDB, 0xDD);
+          } else {
+            output.push(byte);
+          }
+        }
+        return new Uint8Array(output);
+      }
+      
+      // Unescape KISS data.
+      function unescapeKissData(data) {
+        let output = [];
+        for (let i = 0; i < data.length; i++) {
+          if (data[i] === 0xDB && i + 1 < data.length) {
+            if (data[i+1] === 0xDC) {
+              output.push(0xC0);
+              i++;
+              continue;
+            } else if (data[i+1] === 0xDD) {
+              output.push(0xDB);
+              i++;
+              continue;
+            }
+          }
+          output.push(data[i]);
+        }
+        return new Uint8Array(output);
+      }
+      
+      // Wrap a binary packet in KISS framing.
+      function buildKissFrame(aprsPacket) {
+        const escapedPacket = escapeKissData(aprsPacket);
+        const KISS_FLAG = 0xC0;
+        const KISS_CMD_DATA = 0x00;
+        const frame = new Uint8Array(1 + 1 + escapedPacket.length + 1);
+        frame[0] = KISS_FLAG;
+        frame[1] = KISS_CMD_DATA;
+        frame.set(escapedPacket, 2);
+        frame[frame.length - 1] = KISS_FLAG;
+        return frame;
+      }
+      
+      /**********************************************************************
+       * Global Variables for Serial Data Accumulation
+       **********************************************************************/
+      // Buffer to accumulate incomplete KISS frames from the serial port
+      let kissBuffer = new Uint8Array(0);
+      
+      // Helper function to concatenate two Uint8Arrays
+      function concatUint8Arrays(a, b) {
+        let c = new Uint8Array(a.length + b.length);
+        c.set(a, 0);
+        c.set(b, a.length);
+        return c;
+      }
+      
+      /**********************************************************************
+       * Connection Setup: Websockets vs Serial
+       **********************************************************************/
+      let connectionType = document.getElementById('connectionType').value;  // default is "websockets"
+      let serialPort = null;
+      let serialWriter = null;
+      let socket = null;
+      let serialConnected = false;  // Tracks if serial port is open
+      
+      // Update connection indicator dot and send button.
+      function updateConnectionIndicator() {
+        const dot = document.getElementById('connectionStatusDot');
+        if (connectionType === 'websockets') {
+          if (socket && socket.connected) {
+            dot.style.backgroundColor = 'green';
+          } else {
+            dot.style.backgroundColor = 'red';
+          }
+        } else if (connectionType === 'serial') {
+          if (serialConnected) {
+            dot.style.backgroundColor = 'green';
+          } else {
+            dot.style.backgroundColor = 'red';
+          }
+        } else {
+          dot.style.backgroundColor = 'red';
+        }
+        updateSendButtonStatus();
+      }
+      
+      // Enable/disable "Send File" based on connection status.
+      function updateSendButtonStatus() {
+        const sendBtn = document.getElementById('sendFileBtn');
+        if (connectionType === 'websockets') {
+          sendBtn.disabled = !(socket && socket.connected);
+        } else if (connectionType === 'serial') {
+          sendBtn.disabled = !serialConnected;
+        } else {
+          sendBtn.disabled = true;
+        }
+      }
+      
+      // Initialize the websocket connection.
+      function initializeWebSocket() {
+        if (socket) return;
+        socket = io('/');
+        socket.onAny((event, ...args) => {
+          if (event === "raw_kiss_frame") {
+            console.log('Socket event:', event, args);
+          }
+        });
+        socket.on('connect', () => {
+          console.log("Websocket connected, id:", socket.id);
+          updateConnectionIndicator();
+        });
+        socket.on('disconnect', () => {
+          console.log("Websocket disconnected.");
+          updateConnectionIndicator();
+        });
+        socket.on('connect_error', (err) => {
+          console.error("Socket connection error:", err);
+          updateConnectionIndicator();
+        });
+        socket.on('raw_kiss_frame', (packet) => {
+          console.log("Received raw_kiss_frame event:", packet);
+          processRawPacket(packet);
+        });
+        updateConnectionIndicator();
+      }
+      
+      // On page load, default is websockets.
+      if (connectionType === 'websockets') {
+        initializeWebSocket();
+      }
+      
+      // When the connection type changes, update UI and disconnect any unused connection.
+      document.getElementById('connectionType').addEventListener('change', async function(e) {
+        connectionType = e.target.value;
+        if (connectionType === 'serial') {
+          // Show serial settings
+          document.getElementById('serialSettings').style.display = 'block';
+          // Disconnect websockets if open.
+          if (socket) {
+            socket.disconnect();
+            socket = null;
+            console.log("Websocket connection closed (serial selected).");
+          }
+          updateConnectionIndicator();
+        } else {
+          // Hide serial settings and disconnect serial if open.
+          document.getElementById('serialSettings').style.display = 'none';
+          if (serialPort) {
+            try {
+              await serialPort.close();
+              console.log("Serial port closed.");
+            } catch (err) {
+              console.error("Error closing serial port:", err);
+            }
+            serialPort = null;
+            serialWriter = null;
+            serialConnected = false;
+          }
+          if (!socket) {
+            initializeWebSocket();
+          }
+          updateConnectionIndicator();
+        }
+      });
+      
+      // Serial Connect button event handler.
+      document.getElementById('serialConnectBtn').addEventListener('click', async () => {
+        if ("serial" in navigator) {
+          try {
+            serialPort = await navigator.serial.requestPort();
+            const baudRate = parseInt(document.getElementById('baudRate').value, 10);
+            await serialPort.open({ baudRate: baudRate });
+            serialConnected = true;
+            serialWriter = serialPort.writable.getWriter();
+            readSerial();
+            updateStatus("Serial port connected at " + baudRate);
+            updateConnectionIndicator();
+            // Toggle the Connect/Disconnect buttons.
+            document.getElementById('serialConnectBtn').style.display = 'none';
+            document.getElementById('serialDisconnectBtn').style.display = 'inline-block';
+          } catch (error) {
+            console.error("Error opening serial port:", error);
+            alert("Failed to open serial port: " + error);
+            serialConnected = false;
+            updateConnectionIndicator();
+          }
+        } else {
+          alert("Web Serial API not supported in this browser.");
+          serialConnected = false;
+          updateConnectionIndicator();
+        }
+      });
+      
+      // Serial Disconnect button event handler.
+      document.getElementById('serialDisconnectBtn').addEventListener('click', async () => {
+        if (serialPort) {
+          try {
+            await serialPort.close();
+            updateStatus("Serial port disconnected.");
+          } catch (err) {
+            console.error("Error closing serial port:", err);
+          }
+          serialPort = null;
+          serialWriter = null;
+          serialConnected = false;
+          updateConnectionIndicator();
+          // Toggle the Connect/Disconnect buttons.
+          document.getElementById('serialConnectBtn').style.display = 'inline-block';
+          document.getElementById('serialDisconnectBtn').style.display = 'none';
+        }
+      });
+      
+      // Updated readSerial() function with buffering for complete KISS frames.
+      async function readSerial() {
+        while (serialPort && serialPort.readable) {
+          const reader = serialPort.readable.getReader();
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) {
+                break;
+              }
+              if (value) {
+                // Append newly received data to the global buffer
+                kissBuffer = concatUint8Arrays(kissBuffer, value);
+                
+                // Process complete KISS frames from the buffer
+                let startIndex = kissBuffer.indexOf(0xC0);
+                while (startIndex !== -1) {
+                  // Look for the next 0xC0 (end flag) after the start flag
+                  let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
+                  if (endIndex === -1) {
+                    // Incomplete frame, wait for more data
+                    break;
+                  }
+                  // Extract a complete frame (including both start and end flags)
+                  const frame = kissBuffer.slice(startIndex, endIndex + 1);
+                  processRawPacket(frame);
+                  // Remove the processed frame from the buffer
+                  kissBuffer = kissBuffer.slice(endIndex + 1);
+                  // Check for another frame in the remaining buffer
+                  startIndex = kissBuffer.indexOf(0xC0);
+                }
+              }
+            }
+          } catch (error) {
+            console.error("Error reading from serial port:", error);
+          } finally {
+            reader.releaseLock();
+          }
+        }
+      }
+      
+      /**********************************************************************
+       * Sender-Side Code
+       **********************************************************************/
+      let maxRetries = 3;
+      let currentFilePackets = [];
+      let currentPacketIndex = 0;
+      let currentRetries = 0;
+      let totalRetries = 0;
+      let fileTransferInProgress = false;
+      let ackTimer = null;
+      let sentFileStats = null;
+      
+      // Define new chunk size for file data (209 bytes) so that:
+      // 16 (AX.25 header) + 27 (info header) + 209 (payload) = 252 bytes,
+      // plus 3 bytes of KISS framing = 255 bytes total.
+      const CHUNK_SIZE = 209;
+      
+      function updateStatus(msg) {
+        document.getElementById('status').innerText = msg;
+        console.log(msg);
+      }
+      window.updateStatus = updateStatus;
+      
+      function updateSenderProgressUI() {
+        const container = document.getElementById('senderProgress');
+        const cancelBtn = document.getElementById('cancelBtn');
+        if (!fileTransferInProgress || currentFilePackets.length === 0) {
+          container.innerHTML = "<p>No file being sent.</p>";
+          cancelBtn.style.display = "none";
+          return;
+        }
+        cancelBtn.style.display = "inline-block";
+        const now = Date.now();
+        const elapsed = (now - sentFileStats.startTime) / 1000;
+        const progressPercent = Math.floor((currentPacketIndex / currentFilePackets.length) * 100);
+        let eta = "N/A";
+        if (progressPercent > 0) {
+          const estimatedTotal = elapsed / (progressPercent / 100);
+          const remaining = estimatedTotal - elapsed;
+          eta = remaining.toFixed(2) + " s";
+        }
+        const transferRate = elapsed > 0 ? sentFileStats.bytesSent / elapsed : 0;
+        const retryPercent = currentFilePackets.length ? Math.round(totalRetries / currentFilePackets.length * 100) : 0;
+        const html = `
+          <h5>To ${sentFileStats.receiver} – ${sentFileStats.fileName} (ID: ${sentFileStats.fileId}) (${currentPacketIndex + 1}/${currentFilePackets.length} packets sent)</h5>
+          <p>Original Size: ${sentFileStats.originalSize} bytes; Compressed Size: ${sentFileStats.compressedSize} bytes</p>
+          <div class="progress">
+            <div class="progress-bar" role="progressbar" style="width: ${progressPercent}%;" aria-valuenow="${progressPercent}" aria-valuemin="0" aria-valuemax="100">${progressPercent}%</div>
+          </div>
+          <p>Elapsed time: ${elapsed.toFixed(2)} s; ETA: ${eta} (${transferRate.toFixed(0)} bytes/sec); Retries: ${totalRetries} (${retryPercent}%)</p>
+        `;
+        container.innerHTML = html;
+      }
+      
+      document.getElementById('cancelBtn').addEventListener('click', function() {
+        if (fileTransferInProgress) {
+          fileTransferInProgress = false;
+          clearTimeout(ackTimer);
+          updateStatus("File transfer canceled.");
+          updateSenderProgressUI();
+        }
+      });
+      
+      async function sendCurrentPacket(sender, receiver) {
+        if (!fileTransferInProgress) return;
+        if (currentPacketIndex >= currentFilePackets.length) {
+          updateStatus("File transfer complete.");
+          if (sentFileStats) {
+            sentFileStats.endTime = Date.now();
+            sentFileStats.totalTime = ((sentFileStats.endTime - sentFileStats.startTime) / 1000).toFixed(2);
+            sentFileStats.totalRetries = totalRetries;
+            sentFileStats.timestamp = sentFileStats.startTime;
+            persistentSentFiles.push(sentFileStats);
+            saveSentFilesToLocalStorage(persistentSentFiles);
+            updateSentFilesUI();
+            sentFileStats = null;
+            totalRetries = 0;
+          }
+          fileTransferInProgress = false;
+          updateSenderProgressUI();
+          return;
+        }
+        updateSenderProgressUI();
+        const packet = currentFilePackets[currentPacketIndex];
+        if (!sentFileStats.bytesSent) {
+          sentFileStats.bytesSent = 0;
+        }
+        sentFileStats.bytesSent += packet.length;
+        updateStatus(`Sending packet ${currentPacketIndex + 1} of ${currentFilePackets.length} (Retry ${currentRetries})...`);
+        const kissFrame = buildKissFrame(packet);
+        
+        if (connectionType === 'websockets') {
+          if (socket) {
+            socket.emit('raw_kiss_frame', kissFrame);
+          }
+        } else if (connectionType === 'serial' && serialWriter) {
+          try {
+            await serialWriter.write(kissFrame);
+          } catch (err) {
+            console.error("Error writing to serial port:", err);
+          }
+        }
+        
+        ackTimer = setTimeout(() => {
+          currentRetries++;
+          totalRetries++;
+          if (currentRetries <= maxRetries) {
+            updateStatus(`No ACK for packet ${currentPacketIndex + 1}. Retrying (${currentRetries}/${maxRetries})...`);
+            sendCurrentPacket(sender, receiver);
+          } else {
+            updateStatus(`Packet ${currentPacketIndex + 1} failed after ${maxRetries} retries.`);
+            fileTransferInProgress = false;
+            updateSenderProgressUI();
+          }
+        }, 10000);
+      }
+      
+      /**********************************************************************
+       * Receiver-Side Code
+       **********************************************************************/
+      const activeTransfers = {};
+      
+      function updateReceiverProgressUI() {
+        const container = document.getElementById('receiverProgress');
+        const keys = Object.keys(activeTransfers).filter(key => !activeTransfers[key].completed);
+        if (keys.length === 0) {
+          container.innerHTML = "<p>No active transfers.</p>";
+          return;
+        }
+        container.innerHTML = "";
+        keys.forEach(key => {
+          const transfer = activeTransfers[key];
+          const [sender, fileId] = key.split('_');
+          const receivedCount = Object.keys(transfer.received).length;
+          const total = transfer.totalChunks;
+          const progressPercent = total ? Math.floor((receivedCount / total) * 100) : 0;
+          let headerInfo = "";
+          if (transfer.header) {
+            headerInfo = ` - ${transfer.header.fileName} (ID: ${fileId})`;
+          } else {
+            headerInfo = ` (ID: ${fileId})`;
+          }
+          const elapsed = transfer.startTime ? ((Date.now() - transfer.startTime) / 1000) : 0;
+          let eta = "N/A";
+          if (progressPercent > 0) {
+            const estimatedTotal = elapsed / (progressPercent / 100);
+            const remaining = estimatedTotal - elapsed;
+            eta = remaining.toFixed(2) + " s";
+          }
+          let bytesPerSec = "0";
+          if (elapsed > 0 && transfer.rawBytesReceived) {
+            bytesPerSec = (transfer.rawBytesReceived / elapsed).toFixed(0) + "";
+          }
+          const dupCount = transfer.duplicateCount || 0;
+          const dupPercent = total ? Math.round((dupCount / total) * 100) : "0";
+          let progressHTML = `<h5>From ${sender}${headerInfo} (${receivedCount}/${total || "?"} packets received)</h5>`;
+          if (transfer.header) {
+            progressHTML += `<p>Original Size: ${transfer.header.originalSize} bytes; Compressed Size: ${transfer.header.compressedSize} bytes</p>`;
+          }
+          progressHTML += `
+            <div class="progress">
+              <div class="progress-bar" role="progressbar" style="width: ${progressPercent}%;" aria-valuenow="${progressPercent}" aria-valuemin="0" aria-valuemax="100">${progressPercent}%</div>
+            </div>
+            <p>Elapsed time: ${elapsed.toFixed(2)} s; ETA: ${eta} (${bytesPerSec} bytes/sec); Duplicate receptions: ${dupCount} (${dupPercent}%)</p>`;
+          let elem = document.getElementById('progress_' + key);
+          if (!elem) {
+            elem = document.createElement('div');
+            elem.id = 'progress_' + key;
+            container.appendChild(elem);
+          }
+          elem.innerHTML = progressHTML;
+        });
+      }
+      
+      function checkInactiveTransfers() {
+        const now = Date.now();
+        for (const key in activeTransfers) {
+          if (activeTransfers.hasOwnProperty(key)) {
+            const transfer = activeTransfers[key];
+            if (now - transfer.lastUpdate > 30000) {
+              console.log(`Transfer ${key} timed out.`);
+              delete activeTransfers[key];
+              updateReceiverProgressUI();
+            }
+          }
+        }
+      }
+      setInterval(checkInactiveTransfers, 1000);
+      
+      /**********************************************************************
+       * Packet Processing Function for AX.25–compatible KISS Frames
+       **********************************************************************/
+      function processRawPacket(packet) {
+        console.log("Processing raw packet:", packet);
+        let packetBytes;
+        if (typeof packet === 'string') {
+          packetBytes = new TextEncoder().encode(packet);
+        } else if (packet instanceof ArrayBuffer) {
+          packetBytes = new Uint8Array(packet);
+        } else if (packet instanceof Uint8Array) {
+          packetBytes = packet;
+        } else {
+          console.log("Unrecognized packet type; ignoring.");
+          return;
+        }
+        if (packetBytes[0] !== 0xC0 || packetBytes[packetBytes.length - 1] !== 0xC0) {
+          console.error("Invalid KISS frame: missing framing bytes.");
+          return;
+        }
+        // Remove KISS framing: skip flag (0xC0) and command (byte 1) and trailing flag.
+        const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
+        // AX.25 header is 16 bytes long (destination, source, control, PID)
+        if (ax25Frame.length < 16) {
+          console.error("AX.25 frame too short.");
+          return;
+        }
+        // Extract the info field (our inner file-transfer protocol) which follows the AX.25 header.
+        const infoField = ax25Frame.slice(16);
+        let headerLength;
+        const preliminaryHeader = new TextDecoder().decode(infoField.slice(0, 28));
+        if (preliminaryHeader.slice(23, 27) === "ACK:") {
+          headerLength = 30;
+        } else if (infoField[26] === 0x2F) {
+          headerLength = 31;
+        } else {
+          headerLength = 27;
+        }
+        const headerText = new TextDecoder().decode(infoField.slice(0, headerLength));
+        if (headerText.slice(23,27) === "ACK:") {
+          console.log("Received ACK packet:", headerText);
+          const ackFileId = headerText.slice(20,22);
+          const localCallsign = document.getElementById('senderCallsign').value.trim();
+          if (!sentFileStats || ackFileId !== sentFileStats.fileId) {
+            console.log("ACK for a different transfer; ignoring.");
+            return;
+          }
+          const ackSeqStr = headerText.slice(27,30);
+          const ackSeq = parseInt(ackSeqStr, 10);
+          console.log("ACK details - Seq:", ackSeq);
+          if (ackSeq === currentPacketIndex + 1) {
+            console.log("ACK matches. Clearing timer and advancing packet.");
+            clearTimeout(ackTimer);
+            currentRetries = 0;
+            currentPacketIndex++;
+            sendCurrentPacket(
+              document.getElementById('senderCallsign').value,
+              document.getElementById('receiverCallsign').value
+            );
+          } else {
+            console.log("ACK seq", ackSeq, "does not match expected", currentPacketIndex + 1);
+          }
+          return;
+        }
+        
+        if (headerText.indexOf('>') !== 9) {
+          console.log("Packet format invalid: missing or misplaced '>'");
+          return;
+        }
+        const sender = headerText.slice(0,9).trim();
+        const receiver = headerText.slice(10,19).trim();
+        if (headerText.charAt(19) !== ':') {
+          console.log("Packet format invalid: missing colon at position 19.");
+          return;
+        }
+        const fileId = headerText.slice(20,22);
+        if (headerText.charAt(22) !== ':') {
+          console.log("Packet format invalid: missing colon after file ID.");
+          return;
+        }
+        const seqStr = headerText.slice(23,26);
+        const seq = parseInt(seqStr, 10);
+        let totalChunks = null;
+        if (seq === 1) {
+          if (headerText.charAt(26) !== '/') {
+            console.log("Header packet invalid: expected '/' at position 26.");
+            return;
+          }
+          const totalStr = headerText.slice(27,30);
+          totalChunks = parseInt(totalStr, 10);
+          if (headerText.charAt(30) !== ':') {
+            console.log("Header packet invalid: missing colon at position 30.");
+            return;
+          }
+        } else {
+          if (headerText.charAt(26) !== ':') {
+              console.log("Data packet invalid: expected colon at position 26.");
+              return;
+          }
+        }
+        console.log("Packet details - Seq:", seq, "Total (if header):", totalChunks);
+        const payloadChunkEscaped = infoField.slice(headerLength);
+        const payloadChunk = unescapeKissData(payloadChunkEscaped);
+        
+        const localCallsign = document.getElementById('senderCallsign').value.trim();
+        if (receiver !== localCallsign) {
+          console.log("Ignoring packet not intended for me (receiver:", receiver, ", local:", localCallsign, ")");
+          return;
+        }
+        
+        const transferKeyFinal = sender + "_" + fileId;
+        if (!activeTransfers[transferKeyFinal] && seq !== 1) {
+          console.log(`Received packet ${seq} before header from sender ${sender} (file ID: ${fileId}). Ignoring.`);
+          return;
+        }
+        
+        const ackPacketBytes = buildAckPacket(localCallsign, sender, fileId, seq);
+        const ackKissFrame = buildKissFrame(ackPacketBytes);
+        console.log("Sending ACK for packet", seq);
+        if (connectionType === 'websockets') {
+          if (socket) {
+            socket.emit('raw_kiss_frame', ackKissFrame);
+          }
+        } else if (connectionType === 'serial' && serialWriter) {
+          serialWriter.write(ackKissFrame).catch(err => console.error("Error writing ACK to serial port:", err));
+        }
+        
+        if (activeTransfers[transferKeyFinal] && activeTransfers[transferKeyFinal].completed) {
+          activeTransfers[transferKeyFinal].lastUpdate = Date.now();
+          console.log("Transfer already completed for", transferKeyFinal, "; ACK sent, no processing.");
+          return;
+        }
+        
+        if (!activeTransfers[transferKeyFinal] || seq === 1) {
+          console.log("Starting new transfer from sender", sender, "with file ID", fileId);
+          activeTransfers[transferKeyFinal] = { 
+            totalChunks: seq === 1 ? totalChunks : null, 
+            received: {}, 
+            startTime: Date.now(), 
+            duplicateCount: 0,
+            lastUpdate: Date.now()
+          };
+          if (seq === 1) {
+            const headerPayloadText = new TextDecoder().decode(payloadChunk);
+            const parts = headerPayloadText.split("|");
+            if (parts.length < 6) { parts.push("1"); }
+            activeTransfers[transferKeyFinal].header = {
+              fileName: parts[0],
+              originalSize: parseInt(parts[1], 10),
+              compressedSize: parseInt(parts[2], 10),
+              md5: parts[3],
+              fileId: parts[4],
+              compression: (parts[5] === "1")
+            };
+            activeTransfers[transferKeyFinal].totalChunks = totalChunks;
+            console.log("Received header from sender", sender, "for file ID", fileId, activeTransfers[transferKeyFinal].header);
+          }
+          activeTransfers[transferKeyFinal].received[seq] = payloadChunk;
+        } else {
+          if (activeTransfers[transferKeyFinal].received[seq]) {
+            activeTransfers[transferKeyFinal].duplicateCount++;
+            console.log("Duplicate packet", seq, "received from", transferKeyFinal);
+          } else {
+            activeTransfers[transferKeyFinal].received[seq] = payloadChunk;
+          }
+        }
+        if (!activeTransfers[transferKeyFinal].rawBytesReceived) {
+          activeTransfers[transferKeyFinal].rawBytesReceived = 0;
+        }
+        activeTransfers[transferKeyFinal].rawBytesReceived += infoField.length;
+        activeTransfers[transferKeyFinal].lastUpdate = Date.now();
+        const receivedCount = Object.keys(activeTransfers[transferKeyFinal].received).length;
+        console.log("Stored packet", seq, "from", transferKeyFinal, "(", receivedCount, "/", activeTransfers[transferKeyFinal].totalChunks, ")");
+        
+        updateReceiverProgressUI();
+        
+        if (!activeTransfers[transferKeyFinal].completed &&
+            activeTransfers[transferKeyFinal].totalChunks &&
+            receivedCount === activeTransfers[transferKeyFinal].totalChunks) {
+          console.log("All packets received for", transferKeyFinal, "- reassembling file...");
+          if (!activeTransfers[transferKeyFinal].header) {
+            console.error("Missing header for", transferKeyFinal);
+            return;
+          }
+          const dataChunks = [];
+          for (let i = 2; i <= activeTransfers[transferKeyFinal].totalChunks; i++) {
+            if (!activeTransfers[transferKeyFinal].received[i]) {
+              console.error("Missing packet", i, "for", transferKeyFinal);
+              return;
+            }
+            dataChunks.push(activeTransfers[transferKeyFinal].received[i]);
+          }
+          let totalLength = 0;
+          dataChunks.forEach(chunk => { totalLength += chunk.length; });
+          let fullCompressed = new Uint8Array(totalLength);
+          let offset = 0;
+          dataChunks.forEach(chunk => {
+            fullCompressed.set(chunk, offset);
+            offset += chunk.length;
+          });
+          console.log("Reassembled compressed file length:", fullCompressed.length);
+          if (fullCompressed.length !== activeTransfers[transferKeyFinal].header.compressedSize) {
+            console.warn("Reassembled length (" + fullCompressed.length +
+              ") does not match expected (" + activeTransfers[transferKeyFinal].header.compressedSize + ").");
+          }
+          let decompressed;
+          if (activeTransfers[transferKeyFinal].header.compression) {
+            try {
+              decompressed = pako.inflate(fullCompressed);
+            } catch (err) {
+              console.error("Error decompressing file for", transferKeyFinal, ":", err);
+              return;
+            }
+          } else {
+            decompressed = fullCompressed;
+          }
+          console.log("Decompressed file length:", decompressed.length);
+          const blob = new Blob([decompressed]);
+          const elapsed = Date.now() - activeTransfers[transferKeyFinal].startTime;
+          const dupCount = activeTransfers[transferKeyFinal].duplicateCount;
+          const computedMd5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(decompressed)).toString();
+          const checksumMatch = (computedMd5 === activeTransfers[transferKeyFinal].header.md5);
+          const fileObj = {
+            sender: sender,
+            fileName: activeTransfers[transferKeyFinal].header.fileName,
+            originalSize: activeTransfers[transferKeyFinal].header.originalSize,
+            compressedSize: activeTransfers[transferKeyFinal].header.compressedSize,
+            size: blob.size,
+            elapsed: elapsed,
+            duplicates: dupCount,
+            totalPackets: activeTransfers[transferKeyFinal].totalChunks,
+            timestamp: Date.now(),
+            checksumMatch: checksumMatch,
+            bytesReceived: activeTransfers[transferKeyFinal].rawBytesReceived || 0
+          };
+          const reader = new FileReader();
+          reader.onload = function(e) {
+            fileObj.dataUrl = e.target.result;
+            persistentReceivedFiles.push(fileObj);
+            saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+            updateReceivedFilesUI();
+          };
+          reader.onerror = function(e) {
+            console.error("Error converting Blob:", e);
+          };
+          reader.readAsDataURL(blob);
+          console.log("File transfer complete for", transferKeyFinal);
+          activeTransfers[transferKeyFinal].completed = true;
+          activeTransfers[transferKeyFinal].completionTime = Date.now();
+          setTimeout(() => {
+            console.log("Clearing completed transfer for", transferKeyFinal);
+            delete activeTransfers[transferKeyFinal];
+            updateReceiverProgressUI();
+          }, 60000);
+          updateReceiverProgressUI();
+        }
+      }
+      
+      /**********************************************************************
+       * Socket Event Handlers (for websockets only)
+       **********************************************************************/
+      // (Socket connection is created via initializeWebSocket() when needed.)
+      
+      /**********************************************************************
+       * Sender-Side Code (for Testing)
+       **********************************************************************/
+      document.getElementById('sendFileBtn').addEventListener('click', () => {
+        const sender = document.getElementById('senderCallsign').value.trim();
+        const receiver = document.getElementById('receiverCallsign').value.trim();
+        const fileInput = document.getElementById('fileInput');
+        if (!sender || !receiver || fileInput.files.length === 0) {
+          alert("Please enter your callsign, receiver callsign, and select a file.");
+          return;
+        }
+        const compress = document.getElementById('compressCheckbox').checked;
+        maxRetries = parseInt(document.getElementById('retriesDropdown').value, 10);
+        const file = fileInput.files[0];
+        const fileId = generateFileId();
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const arrayBuffer = e.target.result;
+          const fileData = new Uint8Array(arrayBuffer);
+          let finalData;
+          if (compress) {
+            try {
+              finalData = pako.deflate(fileData, { level: 9 });
+            } catch (err) {
+              updateStatus("Compression error: " + err);
+              return;
+            }
+          } else {
+            finalData = fileData;
+          }
+          const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
+          const fileDataChunksCount = Math.ceil(finalData.length / CHUNK_SIZE);
+          const totalPackets = fileDataChunksCount + 1;
+          currentFilePackets = [];
+          const headerStr = file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (compress ? "1" : "0");
+          const headerPayload = new TextEncoder().encode(headerStr);
+          const headerPacket = buildPacket(sender, receiver, 1, totalPackets, headerPayload, fileId);
+          currentFilePackets.push(headerPacket);
+          for (let i = 0; i < fileDataChunksCount; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, finalData.length);
+            const chunk = finalData.slice(start, end);
+            const packet = buildPacket(sender, receiver, i + 2, totalPackets, chunk, fileId);
+            currentFilePackets.push(packet);
+          }
+          currentPacketIndex = 0;
+          currentRetries = 0;
+          totalRetries = 0;
+          fileTransferInProgress = true;
+          sentFileStats = {
+            fileName: file.name,
+            receiver: receiver,
+            originalSize: fileData.length,
+            compressedSize: finalData.length,
+            startTime: Date.now(),
+            totalRetries: 0,
+            bytesSent: 0,
+            totalPackets: currentFilePackets.length,
+            fileId: fileId
+          };
+          updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes.
+                       Transfer will begin with a header packet containing file metadata, MD5 checksum, and compression flag.
+                       File ID: ${fileId}`);
+          updateSenderProgressUI();
+          sendCurrentPacket(sender, receiver);
+        };
+        reader.onerror = function(e) {
+          updateStatus("Error reading file: " + e);
+        };
+        reader.readAsArrayBuffer(file);
+      });
+      
+      // (Optional) Fetch settings to pre-populate your callsign.
+      fetch('/api/settings')
+        .then(response => response.json())
+        .then(settings => {
+          document.getElementById('senderCallsign').value = settings.my_callsign;
+        })
+        .catch(error => {
+          console.error("Error fetching settings:", error);
+        });
+      
+    });
+  </script>
+</body>
+</html>
