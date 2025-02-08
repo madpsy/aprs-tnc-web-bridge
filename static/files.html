@@ -34,11 +34,8 @@
       <label for="fileInput" class="form-label">File to Send</label>
       <input type="file" id="fileInput" class="form-control">
     </div>
-    <!-- New CRC checkbox; default unchecked -->
-    <div class="form-check mb-3">
-      <input class="form-check-input" type="checkbox" id="crcCheckbox">
-      <label class="form-check-label" for="crcCheckbox">CRC</label>
-    </div>
+    <!-- Removed the CRC checkbox -->
+
     <button id="sendFileBtn" class="btn btn-primary">Send File</button>
     <!-- New Cancel Button (initially hidden) -->
     <button id="cancelBtn" class="btn btn-secondary" style="display: none;">Cancel</button>
@@ -80,21 +77,6 @@
        **********************************************************************/
       function padCallsign(cs) {
         return cs.toUpperCase().padEnd(9, ' ');
-      }
-      
-      function crc16(buf) {
-        let crc = 0xFFFF;
-        for (let i = 0; i < buf.length; i++) {
-          crc ^= buf[i] << 8;
-          for (let j = 0; j < 8; j++) {
-            crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
-          }
-        }
-        return crc;
-      }
-      
-      function crcToHex(crc) {
-        return crc.toString(16).toUpperCase().padStart(4, '0');
       }
       
       function uint8ToBase64(u8Arr) {
@@ -269,12 +251,9 @@
        *
        * Packet formats:
        * Header packet (seq === 1):
-       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + "/" + totalChunks(3) + ":" + base64Data + ":" + CRC
+       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + "/" + totalChunks(3) + ":" + base64Data
        * Data packet (seq > 1):
-       *   If per‑chunk CRC is enabled:
-       *     sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + ":" + base64Data + ":" + CRC
-       *   If per‑chunk CRC is disabled:
-       *     sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + ":" + base64Data
+       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + ":" + base64Data
        **********************************************************************/
       function buildPacket(sender, receiver, seq, totalChunks, payloadChunk, fileId) {
         const s = padCallsign(sender);
@@ -283,18 +262,10 @@
         const base64Data = uint8ToBase64(payloadChunk);
         let packet = "";
         if (seq === 1) {
-          // Header always includes a computed CRC.
-          const crcStr = crcToHex(crc16(payloadChunk));
           const totalStr = totalChunks.toString().padStart(3, '0');
-          packet = s + '>' + r + ':' + fileId + ':' + seqStr + '/' + totalStr + ':' + base64Data + ':' + crcStr;
+          packet = s + '>' + r + ':' + fileId + ':' + seqStr + '/' + totalStr + ':' + base64Data;
         } else {
-          if (perChunkCRCEnabled) {
-            const crcStr = crcToHex(crc16(payloadChunk));
-            packet = s + '>' + r + ':' + fileId + ':' + seqStr + ':' + base64Data + ':' + crcStr;
-          } else {
-            // When CRC is disabled, do not append CRC field.
-            packet = s + '>' + r + ':' + fileId + ':' + seqStr + ':' + base64Data;
-          }
+          packet = s + '>' + r + ':' + fileId + ':' + seqStr + ':' + base64Data;
         }
         if (packet.length > 255) {
           console.error("Packet size (" + packet.length + " bytes) exceeds 255 bytes. Consider reducing the chunk size.");
@@ -302,14 +273,14 @@
         return packet;
       }
       
-      // Build ACK packet – always includes a CRC field.
+      // Build ACK packet without CRC.
       // Format:
-      //   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + "ACK:" + seq(3) + ":" + CRC
-      function buildAckPacket(ackSender, ackReceiver, fileId, seq, crcStr) {
+      //   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + "ACK:" + seq(3)
+      function buildAckPacket(ackSender, ackReceiver, fileId, seq) {
         const s = padCallsign(ackSender);
         const r = padCallsign(ackReceiver);
         const seqStr = seq.toString().padStart(3, '0');
-        return s + '>' + r + ':' + fileId + ':' + "ACK:" + seqStr + ':' + crcStr;
+        return s + '>' + r + ':' + fileId + ':' + "ACK:" + seqStr;
       }
       
       /**********************************************************************
@@ -323,17 +294,14 @@
       let ackTimer = null;
       let sentFileStats = null;
       
-      // Global flag for per‑chunk CRC (set from the checkbox when sending a file)
-      let perChunkCRCEnabled = false;
+      // Removed per‑chunk CRC flag
       
-      // Define updateStatus and attach it to window for global access.
       function updateStatus(msg) {
         document.getElementById('status').innerText = msg;
         console.log(msg);
       }
       window.updateStatus = updateStatus;
       
-      // The sender progress UI now includes the file ID and mirrors the receiver format.
       function updateSenderProgressUI() {
         const container = document.getElementById('senderProgress');
         const cancelBtn = document.getElementById('cancelBtn');
@@ -418,7 +386,6 @@
       /**********************************************************************
        * Receiver-Side Variables and Functions
        **********************************************************************/
-      // Transfers are keyed by a composite key: sender + "_" + fileId.
       const activeTransfers = {};
       
       function updateReceiverProgressUI() {
@@ -491,16 +458,14 @@
       /**********************************************************************
        * Common Packet Processing Function
        *
-       * For ACK packets, the format is:
-       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + "ACK:" + seq(3) + ":" + CRC
+       * ACK packet format:
+       *   sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + "ACK:" + seq(3)
        *
-       * For data packets:
-       *   If seq === 1 (header): same format as before (always includes CRC)
-       *   If seq > 1:
-       *     - If CRC is enabled (header.crcEnabled === "1"):
-       *         sender(9)+">"+receiver(9)+":"+fileId(2)+":"+seq(3)+":"+base64Data+":"+CRC
-       *     - If CRC is disabled (header.crcEnabled === "0"):
-       *         sender(9)+">"+receiver(9)+":"+fileId(2)+":"+seq(3)+":"+base64Data
+       * Data/Metadata packets:
+       *   Header (seq === 1):
+       *     sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + "/" + totalChunks(3) + ":" + base64Data
+       *   Data (seq > 1):
+       *     sender(9) + ">" + receiver(9) + ":" + fileId(2) + ":" + seq(3) + ":" + base64Data
        **********************************************************************/
       function processRawPacket(packet) {
         console.log("Processing raw packet:", packet);
@@ -511,10 +476,15 @@
         // --- ACK Packet Detection ---
         if (packet.slice(23,27) === "ACK:") {
           console.log("Received ACK packet:", packet);
+          // Extract the fileId from the ACK packet (characters 20-22)
+          const ackFileId = packet.slice(20,22);
+          if (!sentFileStats || ackFileId !== sentFileStats.fileId) {
+            console.log("Received ACK for a different file transfer (fileId mismatch). Ignoring ACK.");
+            return;
+          }
           const ackSeqStr = packet.slice(27,30);
           const ackSeq = parseInt(ackSeqStr, 10);
-          const ackCrc = packet.slice(31);
-          console.log("ACK details - Seq:", ackSeq, "CRC:", ackCrc);
+          console.log("ACK details - Seq:", ackSeq);
           if (ackSeq === currentPacketIndex + 1) {
             console.log("ACK matches current packet. Clearing ACK timer and moving to next packet.");
             clearTimeout(ackTimer);
@@ -551,7 +521,6 @@
         const seq = parseInt(seqStr, 10);
         let totalChunks = null;
         let base64Data = "";
-        let crcReceived = "";
         let payloadChunk;
         
         if (seq === 1) {
@@ -565,68 +534,21 @@
             console.log("Header packet format invalid: missing colon at position 30.");
             return;
           }
-          const lastColon = packet.lastIndexOf(':');
-          if (lastColon <= 30) {
-            console.log("Header packet format invalid: cannot locate final colon.");
-            return;
-          }
-          base64Data = packet.slice(31, lastColon);
-          crcReceived = packet.slice(lastColon + 1);
+          base64Data = packet.slice(31);
         } else {
-          const transferKey = sender + "_" + fileId;
-          let crcExpected = true;
-          if (activeTransfers[transferKey] && activeTransfers[transferKey].header) {
-            crcExpected = (activeTransfers[transferKey].header.crcEnabled === "1");
-          }
-          if (crcExpected) {
-            if (packet.charAt(26) !== ':') {
+          if (packet.charAt(26) !== ':') {
               console.log("Data packet format invalid: expected colon at position 26.");
               return;
-            }
-            const lastColon = packet.lastIndexOf(':');
-            if (lastColon <= 26) {
-              console.log("Data packet format invalid: cannot locate final colon.");
-              return;
-            }
-            base64Data = packet.slice(27, lastColon);
-            crcReceived = packet.slice(lastColon + 1);
-          } else {
-            base64Data = packet.slice(27);
-            crcReceived = "";
           }
+          base64Data = packet.slice(27);
         }
         console.log("Packet details - Seq:", seq, "Total (if header):", totalChunks,
-                    "Base64 Data (truncated):", base64Data.substring(0,20) + "...",
-                    "CRC received:", crcReceived);
+                    "Base64 Data (truncated):", base64Data.substring(0,20) + "...");
         try {
           payloadChunk = base64ToUint8Array(base64Data);
         } catch (e) {
           console.error("Error decoding Base64 data:", e);
           return;
-        }
-        if (seq !== 1) {
-          const transferKey = sender + "_" + fileId;
-          let crcExpected = true;
-          if (activeTransfers[transferKey] && activeTransfers[transferKey].header) {
-            crcExpected = (activeTransfers[transferKey].header.crcEnabled === "1");
-          }
-          if (crcExpected) {
-            let computedCrc = crcToHex(crc16(payloadChunk));
-            console.log("Computed CRC for packet", seq, ":", computedCrc);
-            if (computedCrc !== crcReceived) {
-              console.log(`CRC mismatch for packet ${seq}: computed ${computedCrc} vs received ${crcReceived}`);
-              return;
-            }
-          } else {
-            console.log("CRC disabled for this transfer; skipping CRC check for packet", seq);
-          }
-        } else {
-          let computedCrc = crcToHex(crc16(payloadChunk));
-          console.log("Computed CRC for header packet:", computedCrc);
-          if (computedCrc !== crcReceived) {
-            console.log(`CRC mismatch for header packet: computed ${computedCrc} vs received ${crcReceived}`);
-            return;
-          }
         }
         const localCallsign = document.getElementById('senderCallsign').value.trim();
         console.log("Local callsign is:", localCallsign);
@@ -641,7 +563,8 @@
           return;
         }
         
-        const ackPacket = buildAckPacket(localCallsign, sender, fileId, seq, crcReceived);
+        // Send ACK packet (no CRC included).
+        const ackPacket = buildAckPacket(localCallsign, sender, fileId, seq);
         console.log("Sending ACK for packet", seq, "with packet:", ackPacket);
         socket.emit('send_raw', { packet: ackPacket });
         console.log("ACK sent for packet", seq);
@@ -664,7 +587,7 @@
           if (seq === 1) {
             const headerText = new TextDecoder().decode(payloadChunk);
             const parts = headerText.split("|");
-            if (parts.length !== 6) {
+            if (parts.length !== 5) {
               console.error("Invalid header payload received from sender", sender, "with file ID", fileId);
               return;
             }
@@ -673,8 +596,7 @@
               originalSize: parseInt(parts[1], 10),
               compressedSize: parseInt(parts[2], 10),
               md5: parts[3],
-              fileId: parts[4],
-              crcEnabled: parts[5]
+              fileId: parts[4]
             };
             activeTransfers[transferKeyFinal].totalChunks = totalChunks;
             console.log("Received header from sender", sender, "for file ID", fileId, activeTransfers[transferKeyFinal].header);
@@ -804,8 +726,7 @@
           return;
         }
         const file = fileInput.files[0];
-        // Read the state of the CRC checkbox.
-        perChunkCRCEnabled = document.getElementById("crcCheckbox").checked;
+        // Removed reading of the CRC checkbox value.
         const fileId = generateFileId();
         const reader = new FileReader();
         reader.onload = function(e) {
@@ -822,8 +743,8 @@
           const fileDataChunksCount = Math.ceil(compressed.length / 165);
           const totalPackets = fileDataChunksCount + 1;
           currentFilePackets = [];
-          // Header metadata: fileName|originalSize|compressedSize|md5|fileId|crcEnabled (1 if enabled, 0 if not)
-          const headerStr = file.name + "|" + fileData.length + "|" + compressed.length + "|" + md5 + "|" + fileId + "|" + (perChunkCRCEnabled ? "1" : "0");
+          // Header metadata: fileName|originalSize|compressedSize|md5|fileId
+          const headerStr = file.name + "|" + fileData.length + "|" + compressed.length + "|" + md5 + "|" + fileId;
           const headerPayload = new TextEncoder().encode(headerStr);
           const headerPacket = buildPacket(sender, receiver, 1, totalPackets, headerPayload, fileId);
           currentFilePackets.push(headerPacket);
@@ -852,7 +773,7 @@
           };
           updateStatus(`File compressed from ${fileData.length} bytes to ${compressed.length} bytes.
                        Transfer will begin with a header packet containing file metadata and MD5 checksum.
-                       File ID: ${fileId} | Per-chunk CRC: ${perChunkCRCEnabled ? "Enabled" : "Disabled"}`);
+                       File ID: ${fileId}`);
           updateSenderProgressUI();
           sendCurrentPacket(sender, receiver);
         };
