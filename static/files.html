@@ -44,8 +44,26 @@
       </select>
     </div>
     
+    <!-- Serial Settings: shown only when Serial is selected -->
+    <div id="serialSettings" style="display: none;">
+      <div class="mb-3">
+        <label for="baudRate" class="form-label">Baud Rate</label>
+        <select id="baudRate" class="form-select">
+          <option value="9600">9600</option>
+          <option value="14400">14400</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200" selected>115200</option>
+        </select>
+      </div>
+      <button id="serialConnectBtn" class="btn btn-primary">Connect</button>
+      <button id="serialDisconnectBtn" class="btn btn-secondary" style="display: none;">Disconnect</button>
+    </div>
+    
     <!-- User Settings -->
     <div class="mb-3">
+      <br>
       <label for="senderCallsign" class="form-label">Your Callsign</label>
       <input type="text" id="senderCallsign" class="form-control" placeholder="Enter your callsign">
     </div>
@@ -495,38 +513,22 @@
         initializeWebSocket();
       }
       
+      // When the connection type changes, update UI and disconnect any unused connection.
       document.getElementById('connectionType').addEventListener('change', async function(e) {
         connectionType = e.target.value;
         if (connectionType === 'serial') {
+          // Show serial settings
+          document.getElementById('serialSettings').style.display = 'block';
           // Disconnect websockets if open.
           if (socket) {
             socket.disconnect();
             socket = null;
             console.log("Websocket connection closed (serial selected).");
           }
-          // Request and open serial port.
-          if ("serial" in navigator) {
-            try {
-              serialPort = await navigator.serial.requestPort();
-              await serialPort.open({ baudRate: 9600 });
-              serialConnected = true;
-              serialWriter = serialPort.writable.getWriter();
-              readSerial();
-              console.log("Serial port opened.");
-              updateConnectionIndicator();
-            } catch (error) {
-              console.error("Error opening serial port:", error);
-              alert("Failed to open serial port: " + error);
-              serialConnected = false;
-              updateConnectionIndicator();
-            }
-          } else {
-            alert("Web Serial API not supported in this browser.");
-            serialConnected = false;
-            updateConnectionIndicator();
-          }
+          updateConnectionIndicator();
         } else {
-          // Switching back to websockets: close serial if open.
+          // Hide serial settings and disconnect serial if open.
+          document.getElementById('serialSettings').style.display = 'none';
           if (serialPort) {
             try {
               await serialPort.close();
@@ -537,11 +539,58 @@
             serialPort = null;
             serialWriter = null;
             serialConnected = false;
-            updateConnectionIndicator();
           }
           if (!socket) {
             initializeWebSocket();
           }
+          updateConnectionIndicator();
+        }
+      });
+      
+      // Serial Connect button event handler.
+      document.getElementById('serialConnectBtn').addEventListener('click', async () => {
+        if ("serial" in navigator) {
+          try {
+            serialPort = await navigator.serial.requestPort();
+            const baudRate = parseInt(document.getElementById('baudRate').value, 10);
+            await serialPort.open({ baudRate: baudRate });
+            serialConnected = true;
+            serialWriter = serialPort.writable.getWriter();
+            readSerial();
+            updateStatus("Serial port connected at " + baudRate);
+            updateConnectionIndicator();
+            // Toggle the Connect/Disconnect buttons.
+            document.getElementById('serialConnectBtn').style.display = 'none';
+            document.getElementById('serialDisconnectBtn').style.display = 'inline-block';
+          } catch (error) {
+            console.error("Error opening serial port:", error);
+            alert("Failed to open serial port: " + error);
+            serialConnected = false;
+            updateConnectionIndicator();
+          }
+        } else {
+          alert("Web Serial API not supported in this browser.");
+          serialConnected = false;
+          updateConnectionIndicator();
+        }
+      });
+      
+      // Serial Disconnect button event handler.
+      document.getElementById('serialDisconnectBtn').addEventListener('click', async () => {
+        if (serialPort) {
+          try {
+            await serialPort.close();
+            updateStatus("Serial port disconnected.");
+          } catch (err) {
+            console.error("Error closing serial port:", err);
+          }
+          serialPort = null;
+          serialWriter = null;
+          serialConnected = false;
+          updateConnectionIndicator();
+          // Toggle the Connect/Disconnect buttons.
+          document.getElementById('serialConnectBtn').style.display = 'inline-block';
+          document.getElementById('serialDisconnectBtn').style.display = 'none';
         }
       });
       
