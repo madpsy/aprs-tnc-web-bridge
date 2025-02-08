@@ -661,6 +661,11 @@
       let ackTimer = null;
       let sentFileStats = null;
       
+      // Define new chunk size for file data (209 bytes) so that:
+      // 16 (AX.25 header) + 27 (info header) + 209 (payload) = 252 bytes,
+      // plus 3 bytes of KISS framing = 255 bytes total.
+      const CHUNK_SIZE = 209;
+      
       function updateStatus(msg) {
         document.getElementById('status').innerText = msg;
         console.log(msg);
@@ -1127,7 +1132,7 @@
             finalData = fileData;
           }
           const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
-          const fileDataChunksCount = Math.ceil(finalData.length / 165);
+          const fileDataChunksCount = Math.ceil(finalData.length / CHUNK_SIZE);
           const totalPackets = fileDataChunksCount + 1;
           currentFilePackets = [];
           const headerStr = file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (compress ? "1" : "0");
@@ -1135,8 +1140,8 @@
           const headerPacket = buildPacket(sender, receiver, 1, totalPackets, headerPayload, fileId);
           currentFilePackets.push(headerPacket);
           for (let i = 0; i < fileDataChunksCount; i++) {
-            const start = i * 165;
-            const end = Math.min(start + 165, finalData.length);
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, finalData.length);
             const chunk = finalData.slice(start, end);
             const packet = buildPacket(sender, receiver, i + 2, totalPackets, chunk, fileId);
             currentFilePackets.push(packet);
