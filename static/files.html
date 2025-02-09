@@ -81,16 +81,6 @@
         <input type="checkbox" class="form-check-input" id="compressCheckbox" checked>
         <label class="form-check-label" for="compressCheckbox">Compress</label>
       </div>
-      <div class="inline-control">
-        <label for="retriesDropdown" class="form-label" style="margin-bottom: 0;">Retries</label>
-        <select id="retriesDropdown" class="form-select" style="width: auto; display: inline-block; margin-left: 10px;">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3" selected>3</option>
-          <option value="4">4</option>
-          <option value="5">5</option>
-        </select>
-      </div>
       <!-- Begin Burst Count Slider / Auto Controls (replacing the old dropdown) -->
       <div class="inline-control">
         <label for="burstSlider" class="form-label" style="margin-bottom: 0;">
@@ -1303,7 +1293,6 @@
           return;
         }
         const compress = document.getElementById('compressCheckbox').checked;
-        maxRetries = parseInt(document.getElementById('retriesDropdown').value, 10);
         if (document.getElementById('autoBurstCheckbox').checked) {
           burstSize = 0;
           currentDynamicBurstIndex = 2;
@@ -1420,7 +1409,14 @@ window.deleteReceivedFile = function(index) {
   // Refresh the UI to reflect the change
   updateReceivedFilesUI();
 };
-
+window.reAckTransfer = function(key) {
+  let transfer = activeTransfers[key];
+  if (!transfer) return;
+  const senderStr = key.split("_")[0];
+  const fileId = key.split("_")[1];
+  console.log("[Re-ACK] Manually resending cumulative ACK for:", key);
+  sendCumulativeAck(transfer, senderStr, fileId, true);
+};
   </script>
 </body>
 </html>
