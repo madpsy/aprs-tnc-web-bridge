@@ -86,7 +86,7 @@
         <label for="burstSlider" class="form-label" style="margin-bottom: 0;">
           Window Size: <span id="burstValue">4</span>
         </label>
-        <input type="range" class="form-range" id="burstSlider" min="0" max="4" step="1" value="2">
+        <input type="range" class="form-range" id="burstSlider" min="0" max="5" step="1" value="2">
       </div>
       <div class="inline-control">
         <div class="form-check" style="margin-left: 10px;">
@@ -149,8 +149,8 @@
     let headerAckReceived = false;
     let burstInProgress = false;
     let lastRangeAck = "";
+    let duplicateAckCount = 0;
     let missingPackets = [];
-    let duplicateAckCount = 0;  // New global counter for duplicate ACKs.
     
     let fileDataChunks = [];
     let totalPackets = 0;
@@ -161,14 +161,10 @@
     let fileId = "";
     
     // Global variables for dynamic burst mode
-    const dynamicBurstSizes = [1, 2, 4, 8, 16];
+    const dynamicBurstSizes = [1, 2, 4, 6, 8, 10];
     let currentDynamicBurstIndex = 2;
     let currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-    let consecutiveDecreaseCount = 0;
-    let maxAllowedDynamicBurstIndex = dynamicBurstSizes.length - 1; // initially no cap
-    let capLocked = false;
-    let lockedBurstCap = dynamicBurstSizes[dynamicBurstSizes.length - 1];
-    let cumulativeDecreaseCount = 0;
+    let consecutiveSuccessCount = 0;
     
     // New global variables for sender state display
     let senderState = "Sending";
@@ -393,9 +389,6 @@
       `;
     }
     
-    // --- Expose processRawPacket globally so that socket events can call it.
-    window.processRawPacket = processRawPacket;
-    
     /***********************
      * Updated sendAckFromReceiver() to Record Ack Time
      ***********************/
@@ -602,16 +595,16 @@
       if (lastRangeAck === ackContent) {
         duplicateAckCount++;
         console.log("Received duplicate range ACK (" + duplicateAckCount + "):", ackContent);
+        // Immediately resend the next set of packets.
+        sendBurstPackets();
+        // Also, if three duplicate ACKs are received, resend missing packets.
         if (duplicateAckCount >= 3) {
           console.log("Three duplicate ACKs received; resending missing packets:", missingPackets);
           missingPackets.forEach(seq => { 
-    sendPacket(seq); 
-    totalRetries++; // Increment retry count
-  });
+            sendPacket(seq); 
+            totalRetries++; // Increment retry count
+          });
           duplicateAckCount = 0;
-        }
-        if (currentPacketIndex >= totalPackets) {
-          sendBurstPackets();
         }
         return;
       } else {
@@ -650,21 +643,21 @@
       burstInProgress = false;
       updateSenderProgressUI();
     
+      // NEW DYNAMIC WINDOW LOGIC:
       if (burstSize === 0) {
         if (missingPackets.length === 0) {
-          if (currentDynamicBurstIndex < dynamicBurstSizes.length - 1) {
-            let nextBurst = dynamicBurstSizes[currentDynamicBurstIndex + 1];
-            if (nextBurst <= lockedBurstCap) {
+          consecutiveSuccessCount++;
+          console.log("Consecutive success count:", consecutiveSuccessCount);
+          if (consecutiveSuccessCount >= 2) {
+            if (currentDynamicBurstIndex < dynamicBurstSizes.length - 1) {
               currentDynamicBurstIndex++;
               currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
               console.log("Dynamic burst increased to", currentBurstSizeDynamic);
               updateBurstSlider(currentDynamicBurstIndex);
             } else {
-              console.log("Dynamic burst increase prevented by cap. Current burst:",
-                          currentBurstSizeDynamic, "Cap:", lockedBurstCap);
+              console.log("Dynamic burst is already at maximum index.");
             }
-          } else {
-            console.log("Dynamic burst is already at maximum index.");
+            consecutiveSuccessCount = 0;
           }
         } else {
           if (currentDynamicBurstIndex > 0) {
@@ -672,541 +665,66 @@
             currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
             console.log("Dynamic burst decreased to", currentBurstSizeDynamic);
             updateBurstSlider(currentDynamicBurstIndex);
-            if (currentBurstSizeDynamic < lockedBurstCap) {
-              cumulativeDecreaseCount++;
-              console.log("Cumulative decrease count:", cumulativeDecreaseCount);
-              if (cumulativeDecreaseCount >= 2) {
-                lockedBurstCap = currentBurstSizeDynamic;
-                console.log("Dynamic burst cap locked at", lockedBurstCap);
-                cumulativeDecreaseCount = 0;
-              }
-            }
           }
+          consecutiveSuccessCount = 0;
         }
       }
     
       sendBurstPackets();
     }
     
-    // --- MODIFICATION: Sender only resends missing packets on timeout ---
-    function sendBurstPackets() {
-      if (!fileTransferInProgress) return;
-      if (missingPackets.length > 0) {
-        console.log("Sender: Resending missing packets:", missingPackets);
-        missingPackets.forEach(seq => { 
-    sendPacket(seq);
-    totalRetries++; // Increment the counter for each resend
-  });
-        let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
-        const ackTimeout = effectiveBurst * 2500 + 500;
-        // Set sender state to Awaiting ACK and record the time.
-        senderState = "Awaiting ACK";
-        senderStateTimestamp = Date.now();
-        ackTimer = setTimeout(() => {
-          console.log("Sender: No ACK received for missing packets; resending missing packets again.");
-          missingPackets.forEach(seq => { sendPacket(seq); });
-        }, ackTimeout);
-        return;
-      }
-      if (currentPacketIndex >= totalPackets) {
-        updateStatus("File transfer complete.");
-        sentFileStats.endTime = Date.now();
-        sentFileStats.totalTime = ((sentFileStats.endTime - sentFileStats.startTime) / 1000).toFixed(2);
-        sentFileStats.totalRetries = totalRetries + currentRetries;
-        sentFileStats.timestamp = sentFileStats.startTime;
-        persistentSentFiles.push(sentFileStats);
-        saveSentFilesToLocalStorage(persistentSentFiles);
-        updateSentFilesUI();
-        sentFileStats = null;
-        totalRetries = 0;
-        fileTransferInProgress = false;
-        updateSenderProgressUI();
-        for (let key in activeTransfers) {
-          if (activeTransfers[key].completed) {
-            delete activeTransfers[key];
-          }
-        }
-        updateReceiverProgressUI();
-        document.getElementById('sendFileBtn').disabled = false;
-        return;
-      }
-      if (burstInProgress) return;
-      burstInProgress = true;
-      let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
-      let startSeq = currentPacketIndex + 1;
-      let endSeq = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
-      updateSenderProgressUI();
-      for (let seq = startSeq; seq <= endSeq; seq++) {
-        sendPacket(seq);
-      }
-    
-      const ackTimeout = effectiveBurst * 2500 + 500;
-      // Set sender state to Awaiting ACK and record the time.
-      senderState = "Awaiting ACK";
-      senderStateTimestamp = Date.now();
-      ackTimer = setTimeout(() => {
-        console.log("Sender: No ACK received; re-sending missing packets again.");
-        totalRetries += missingPackets.length;
-        missingPackets.forEach(seq => { sendPacket(seq); });
-        burstInProgress = false;
-      }, ackTimeout);
-    }
-    
-    function sendPacket(seq) {
-      if (seq > highestPacketSentSoFar) {
-        highestPacketSentSoFar = seq; 
-      }
-      let payloadChunk = fileDataChunks[seq - 1];
-      let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
-      let currentBurstTo = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
-      let packet = buildPacket(sender, receiver, seq, totalPackets, payloadChunk, fileId, currentBurstTo);
-      sentFileStats.bytesSent = (sentFileStats.bytesSent || 0) + packet.length;
-      console.log(`Sending packet ${seq} of ${totalPackets}`);
-      const kissFrame = buildKissFrame(packet);
-      if (document.getElementById('connectionType').value === 'websockets') {
-        if (socket) socket.emit('raw_kiss_frame', kissFrame);
-      } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
-        serialWriter.write(kissFrame).catch(err => console.error("Error sending packet:", err));
-      }
-    }
-    
-    /***********************
-     * KISS Framing Functions
-     ***********************/
-    function escapeKissData(data) {
-      let output = [];
-      for (let i = 0; i < data.length; i++) {
-        let byte = data[i];
-        if (byte === 0xC0) output.push(0xDB, 0xDC);
-        else if (byte === 0xDB) output.push(0xDB, 0xDD);
-        else output.push(byte);
-      }
-      return new Uint8Array(output);
-    }
-    
-    function unescapeKissData(data) {
-      let output = [];
-      for (let i = 0; i < data.length; i++) {
-        if (data[i] === 0xDB && i + 1 < data.length) {
-          if (data[i+1] === 0xDC) { output.push(0xC0); i++; continue; }
-          else if (data[i+1] === 0xDD) { output.push(0xDB); i++; continue; }
-        }
-        output.push(data[i]);
-      }
-      return new Uint8Array(output);
-    }
-    
-    function buildKissFrame(aprsPacket) {
-      const escapedPacket = escapeKissData(aprsPacket);
-      const KISS_FLAG = 0xC0, KISS_CMD_DATA = 0x00;
-      let frame = new Uint8Array(1 + 1 + escapedPacket.length + 1);
-      frame[0] = KISS_FLAG;
-      frame[1] = KISS_CMD_DATA;
-      frame.set(escapedPacket, 2);
-      frame[frame.length - 1] = KISS_FLAG;
-      return frame;
-    }
-    
-    function concatUint8Arrays(a, b) {
-      let c = new Uint8Array(a.length + b.length);
-      c.set(a, 0);
-      c.set(b, a.length);
-      return c;
-    }
-    
-    /***********************
-     * Connection Setup Functions
-     ***********************/
-    function updateConnectionIndicator() {
-      const dot = document.getElementById('connectionStatusDot');
-      if (document.getElementById('connectionType').value === 'websockets')
-        dot.style.backgroundColor = (socket && socket.connected) ? 'green' : 'red';
-      else
-        dot.style.backgroundColor = serialConnected ? 'green' : 'red';
-      updateSendButtonStatus();
-    }
-    
-    function updateSendButtonStatus() {
-      const sendBtn = document.getElementById('sendFileBtn');
-      sendBtn.disabled = (document.getElementById('connectionType').value === 'websockets')
-                         ? !(socket && socket.connected) : !serialConnected;
-    }
-    
-    function initializeWebSocket() {
-      if (socket) return;
-      socket = io('/');
-      socket.onAny((event, ...args) => { if (event === "raw_kiss_frame") console.log('Socket event:', event, args); });
-      socket.on('connect', () => { console.log("Websocket connected, id:", socket.id); updateConnectionIndicator(); });
-      socket.on('disconnect', () => { console.log("Websocket disconnected."); updateConnectionIndicator(); });
-      socket.on('connect_error', (err) => { console.error("Socket connection error:", err); updateConnectionIndicator(); });
-      socket.on('raw_kiss_frame', (packet) => { console.log("Received raw_kiss_frame event:", packet); processRawPacket(packet); });
-      updateConnectionIndicator();
-    }
-    
-    async function readSerial() {
-      while (serialPort && serialPort.readable) {
-        const reader = serialPort.readable.getReader();
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            if (value) {
-              kissBuffer = concatUint8Arrays(kissBuffer, value);
-              let startIndex = kissBuffer.indexOf(0xC0);
-              while (startIndex !== -1) {
-                let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
-                if (endIndex === -1) break;
-                const frame = kissBuffer.slice(startIndex, endIndex + 1);
-                processRawPacket(frame);
-                kissBuffer = kissBuffer.slice(endIndex + 1);
-                startIndex = kissBuffer.indexOf(0xC0);
-              }
-            }
-          }
-        } catch (error) {
-          console.error("Error reading serial port:", error);
-        } finally {
-          reader.releaseLock();
-        }
-      }
-    }
-    
-    /***********************
-     * Sender UI: Manual Resend and Cancel Functions
-     ***********************/
-    function manualResend() {
-      console.log("Manual Re-Send triggered by sender. Resending missing packets...");
-      sendBurstPackets();
-    }
-    
-    function cancelSenderTransfer() {
-      if (fileTransferInProgress) {
-        fileTransferInProgress = false;
-        clearTimeout(ackTimer);
-        updateStatus("File transfer canceled.");
-        updateSenderProgressUI();
-        document.getElementById('sendFileBtn').disabled = false;
-      }
-    }
-    
-    // --- Expose processRawPacket globally so that socket events can call it.
-    window.processRawPacket = processRawPacket;
-    
-    /***********************
-     * processRawPacket Function (Receiver Side)
-     ***********************/
-function processRawPacket(packet) {
-  console.log("Processing raw packet:", packet);
-  let packetBytes;
-  if (typeof packet === 'string') {
-    packetBytes = new TextEncoder().encode(packet);
-  } else if (packet instanceof ArrayBuffer) {
-    packetBytes = new Uint8Array(packet);
-  } else if (packet instanceof Uint8Array) {
-    packetBytes = packet;
-  } else {
-    console.log("Unrecognized packet type; ignoring.");
-    return;
-  }
-
-  // Basic KISS framing checks
-  if (packetBytes[0] !== 0xC0 || packetBytes[packetBytes.length - 1] !== 0xC0) {
-    console.error("Invalid KISS frame: missing framing bytes.");
-    return;
-  }
-
-  // AX.25 frame extraction
-  const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
-  if (ax25Frame.length < 16) {
-    return;
-  }
-  const infoField = ax25Frame.slice(16);
-  let infoText = new TextDecoder().decode(infoField);
-
-  // Check for an ACK from the remote sender
-  if (infoText.indexOf(":ACK:") !== -1) {
-    let ackValue = processAckFrame(infoText);
-    if (ackValue === null) return;
-    console.log("Sender received ACK:", ackValue, "at", new Date().toLocaleTimeString());
-    processAck(ackValue);
-    if (ackTimer) {
-      clearTimeout(ackTimer);
-      ackTimer = null;
-    }
-    burstInProgress = false;
-    return;
-  }
-
-  // Minimal sanity checks for packet format.
-  if (infoText.indexOf('>') < 0) {
-    console.log("Packet format invalid: missing '>'");
-    return;
-  }
-  if (infoText.charAt(19) !== ':') {
-    console.log("Packet format invalid: missing ':' at position 19");
-    return;
-  }
-
-  // Parse callsigns, fileId, seq, burstTo, etc.
-  let senderStr   = infoText.substring(0, 9).trim();
-  let receiverStr = infoText.substring(10, 19).trim();
-  let fileId      = infoText.substring(20, 22).trim();
-  if (infoText.charAt(22) !== ':') {
-    console.log("Packet format invalid: missing colon after file ID.");
-    return;
-  }
-  let seq     = parseInt(infoText.substring(23, 25), 16);
-  let burstTo = parseInt(infoText.substring(25, 27), 16);
-
-  // If not intended for our callsign, ignore.
-  if (receiverStr !== document.getElementById('senderCallsign').value.trim()) {
-    console.log("Ignoring packet not intended for me (packet receiver:",
-      receiverStr, ", local:", document.getElementById('senderCallsign').value.trim(), ")");
-    return;
-  }
-
-  // Extract payload after the optional "/<total>:" for seq=1.
-  let offset = (seq === 1) ? 31 : 28;
-  let payloadChunk = unescapeKissData(infoField.slice(offset));
-
-  // Identify the unique transfer key.
-  let transferKeyFinal = senderStr + "_" + fileId;
-
-  // If it's the first packet (seq===1), create a new transfer record.
-  if (seq === 1 && !activeTransfers[transferKeyFinal]) {
-    console.log("Starting new transfer from sender", senderStr, "with file ID", fileId);
-    activeTransfers[transferKeyFinal] = {
-      totalChunks: parseInt(infoText.substring(28, 30), 16),
-      received: {},
-      startTime: Date.now(),
-      duplicateCount: 0,
-      lastUpdate: Date.now(),
-      ackTimer: null,
-      lastPacketTime: Date.now(),
-      ackDelay: 2000,
-      currentBurstBoundary: 0,
-      burstStartTime: Date.now()
-      // We'll add a downloadTriggered flag later when the file is reassembled.
-    };
-    let headerPayloadText = new TextDecoder().decode(payloadChunk);
-    let parts = headerPayloadText.split("|");
-    activeTransfers[transferKeyFinal].header = {
-      fileName: parts[0],
-      originalSize: parseInt(parts[1], 10),
-      compressedSize: parseInt(parts[2], 10),
-      md5: parts[3],
-      fileId: parts[4],
-      compression: (parts[5] === "1"),
-      expectedTotal: parts.length >= 7 ? parseInt(parts[6], 10) : parseInt(infoText.substring(28, 30), 16)
-    };
-    activeTransfers[transferKeyFinal].totalChunks = activeTransfers[transferKeyFinal].header.expectedTotal;
-    console.log("Received header from sender", senderStr, "for file ID", fileId, activeTransfers[transferKeyFinal].header);
-  }
-
-  let transfer = activeTransfers[transferKeyFinal];
-  if (!transfer) {
-    console.error("No active transfer record for", transferKeyFinal);
-    return;
-  }
-
-  let isDuplicate = !!transfer.received[seq];
-  if (!isDuplicate) {
-    transfer.received[seq] = payloadChunk;
-  } else {
-    transfer.duplicateCount++;
-    console.log("Duplicate packet", seq, "received from", transferKeyFinal);
-  }
-
-  if (!transfer.rawBytesReceived) transfer.rawBytesReceived = 0;
-  transfer.rawBytesReceived += infoField.length;
-  transfer.lastUpdate = Date.now();
-  console.log("Stored packet", seq, "from", transferKeyFinal, `(${Object.keys(transfer.received).length} / ${transfer.totalChunks})`);
-  updateReceiverProgressUI();
-
-  if (seq === 1) {
-    sendAckFromReceiver(senderStr, fileId, "02");
-    return;
-  }
-
-  let contiguous = 2;
-  while (transfer.received[contiguous]) contiguous++;
-  transfer.lastAcked = contiguous - 1;
-
-  if (!isDuplicate && !transfer.completed) {
-    transfer.lastPacketTime = Date.now();
-    if (transfer.ackTimer) {
-      clearTimeout(transfer.ackTimer);
-      transfer.ackTimer = null;
-    }
-    if ((contiguous - 1) >= burstTo) {
-      console.log("Receiver: Reached highest burst seq (", burstTo, "), ACKing immediately.");
-      sendCumulativeAck(transfer, senderStr, fileId, true);
-    } else {
-      transfer.ackTimer = setTimeout(() => {
-        console.log("Receiver: 2s idle, sending partial/cumulative ACK");
-        sendCumulativeAck(transfer, senderStr, fileId);
-        transfer.ackTimer = null;
-      }, transfer.ackDelay);
-    }
-  }
-
-  let allPacketsReceived = transfer.totalChunks && Object.keys(transfer.received).length === transfer.totalChunks;
-
-  if (!transfer.completed && allPacketsReceived) {
-    // Ensure we process this file only once.
-    if (transfer.downloadTriggered) return;
-    transfer.downloadTriggered = true;
-
-    // --- NEW: Check if we've already processed this file ---
-    if (transfer.header && persistentReceivedFiles.some(f => f.fileId === transfer.header.fileId && f.sender === senderStr)) {
-      console.log("File already processed, skipping reassembly and download.");
-      return;
-    }
-
-    console.log("All packets received for", transferKeyFinal, "- reassembling file...");
-    if (!transfer.header) {
-      console.error("Missing header for", transferKeyFinal);
-      return;
-    }
-
-    let dataChunks = [];
-    for (let i = 2; i <= transfer.totalChunks; i++) {
-      if (!transfer.received[i]) {
-        console.error("Missing packet", i, "for", transferKeyFinal);
-        return;
-      }
-      dataChunks.push(transfer.received[i]);
-    }
-    let totalLength = dataChunks.reduce((acc, c) => acc + c.length, 0);
-    let fullCompressed = new Uint8Array(totalLength);
-    let offset = 0;
-    dataChunks.forEach(chunk => {
-      fullCompressed.set(chunk, offset);
-      offset += chunk.length;
-    });
-    console.log("Reassembled compressed file length:", fullCompressed.length);
-
-    let decompressed;
-    if (transfer.header.compression) {
-      try {
-        decompressed = pako.inflate(fullCompressed);
-      } catch (err) {
-        console.error("Error decompressing file for", transferKeyFinal, ":", err);
-        return;
-      }
-    } else {
-      decompressed = fullCompressed;
-    }
-    if (!decompressed) {
-      console.error("Decompression failed: decompressed data is undefined");
-      return;
-    }
-    console.log("Decompressed file length:", decompressed.length);
-
-    // Create a Blob from the decompressed data.
-    const blob = new Blob([decompressed]);
-    const elapsedTotal = Date.now() - transfer.startTime;
-    const dupCount = transfer.duplicateCount;
-    const computedMd5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(decompressed)).toString();
-    const checksumMatch = (computedMd5 === transfer.header.md5);
-
-    const fileObj = {
-      sender: senderStr,
-      fileName: transfer.header.fileName,
-      originalSize: transfer.header.originalSize,
-      compressedSize: transfer.header.compressedSize,
-      size: blob.size,
-      elapsed: elapsedTotal,
-      duplicates: dupCount,
-      totalPackets: transfer.totalChunks,
-      timestamp: Date.now(),
-      checksumMatch: checksumMatch,
-      bytesReceived: transfer.rawBytesReceived || 0,
-      fileId: transfer.header.fileId
-    };
-
-    // Convert the Blob to a Data URL for persistent storage.
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      fileObj.dataUrl = e.target.result;
-      let existingIndex = persistentReceivedFiles.findIndex(
-        f => f.fileId === fileObj.fileId && f.sender === fileObj.sender
-      );
-      if (existingIndex !== -1) {
-        persistentReceivedFiles[existingIndex] = fileObj;
-      } else {
-        persistentReceivedFiles.push(fileObj);
-        existingIndex = persistentReceivedFiles.length - 1;
-      }
-      saveReceivedFilesToLocalStorage(persistentReceivedFiles);
-      updateReceivedFilesUI();
-
-      // Only trigger the automatic download if the checksum passes.
-      if (checksumMatch) {
-        downloadReceivedFile(existingIndex);
-      } else {
-        console.error("Checksum does not match; automatic download aborted.");
-        updateStatus("Received file failed checksum verification.");
-      }
-    };
-    reader.onerror = function(e) {
-      console.error("Error converting Blob:", e);
-    };
-    reader.readAsDataURL(blob);
-
-    console.log("Receiver: Entire file complete, sending final ACK now.");
-    sendCumulativeAck(transfer, senderStr, fileId, true);
-
-    console.log("File transfer complete for", transferKeyFinal);
-    transfer.completed = true;
-    transfer.completionTime = Date.now();
-    if (transfer.resendAckTimer) {
-      clearTimeout(transfer.resendAckTimer);
-      transfer.resendAckTimer = null;
-    }
-    delete activeTransfers[transferKeyFinal];
-    updateReceiverProgressUI();
-  }
-}
- 
-
-    /***********************
-     * Sender ACK Handling & Burst Sending
-     ***********************/
+    // --- Updated processAck to also handle duplicate single ACKs ---
     function processAck(ackContent) {
-      if (ackContent === "02") {
+      // MODIFICATION: Change header ACK from "02" to "01"
+      if (ackContent === "01") {
         if (!headerAckReceived) {
           headerAckReceived = true;
           currentPacketIndex = 1;
-          console.log("Processed header ACK: 02; setting currentPacketIndex to 1");
+          console.log("Processed header ACK: 01; setting currentPacketIndex to 1");
           if (!burstInProgress) {
             sendBurstPackets();
           }
         } else {
-          let ackNum = parseInt(ackContent, 16);
-          if (!isNaN(ackNum) && ackNum > currentPacketIndex) {
-            currentPacketIndex = ackNum;
-            console.log("Sender: Cumulative ACK updated currentPacketIndex to", currentPacketIndex);
-            updateSenderProgressUI();
-            if (!burstInProgress && currentPacketIndex < totalPackets) {
-              sendBurstPackets();
-            }
-          }
+          // If a duplicate header ACK is received, resend the next set.
+          console.log("Duplicate header ACK received; resending next set of packets.");
+          sendBurstPackets();
         }
         return;
       }
       
+      // Check for range ACK format.
       if (ackContent.indexOf('-') !== -1 || ackContent.indexOf(',') !== -1) {
         processRangeAck(ackContent);
+        return;
+      }
+      
+      // For single ACKs, check for duplicate.
+      if (ackContent === lastRangeAck) {
+        duplicateAckCount++;
+        console.log("Received duplicate ACK (" + duplicateAckCount + "):", ackContent);
+        // Resend next set of packets.
+        sendBurstPackets();
+        if (duplicateAckCount >= 3) {
+          console.log("Three duplicate ACKs received; resending missing packets:", missingPackets);
+          missingPackets.forEach(seq => { 
+            sendPacket(seq); 
+            totalRetries++; 
+          });
+          duplicateAckCount = 0;
+        }
+        return;
       } else {
-        let ackNum = parseInt(ackContent, 16);
-        if (!isNaN(ackNum) && ackNum > currentPacketIndex) {
-          currentPacketIndex = ackNum;
-          console.log("Sender: Cumulative ACK updated currentPacketIndex to", currentPacketIndex);
-          updateSenderProgressUI();
-          if (!burstInProgress && currentPacketIndex < totalPackets) {
-            sendBurstPackets();
-          }
+        duplicateAckCount = 0;
+        lastRangeAck = ackContent;
+      }
+      
+      let ackNum = parseInt(ackContent, 16);
+      if (!isNaN(ackNum) && ackNum > currentPacketIndex) {
+        currentPacketIndex = ackNum;
+        console.log("Sender: Cumulative ACK updated currentPacketIndex to", currentPacketIndex);
+        updateSenderProgressUI();
+        if (!burstInProgress && currentPacketIndex < totalPackets) {
+          sendBurstPackets();
         }
       }
     }
@@ -1220,7 +738,6 @@ function processRawPacket(packet) {
         label.textContent = dynamicBurstSizes[index];
       }
     }
-    window.processRawPacket = processRawPacket;
     
     /***********************
      * Document Ready & Connection Setup
@@ -1302,9 +819,7 @@ function processRawPacket(packet) {
         // Reset dynamic burst parameters for a new file transfer.
         currentDynamicBurstIndex = 2;
         currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-        capLocked = false;
-        lockedBurstCap = dynamicBurstSizes[dynamicBurstSizes.length - 1]; // reset to the highest value
-        cumulativeDecreaseCount = 0;
+        consecutiveSuccessCount = 0;
     
         if (fileTransferInProgress) {
           alert("A file transfer is already in progress.");
@@ -1412,56 +927,596 @@ File ID: ${fileId}`);
       document.getElementById('status').innerText = msg;
       console.log(msg);
     }
-window.downloadReceivedFile = function(index) {
-  const file = persistentReceivedFiles[index];
-  if (!file) return;
-  const a = document.createElement('a');
-  a.href = file.dataUrl;
-  a.download = file.fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-};
-
-window.clearSentFile = function(index) {
-  persistentSentFiles.splice(index, 1);
-  saveSentFilesToLocalStorage(persistentSentFiles);
-  updateSentFilesUI();
-};
-window.deleteReceivedFile = function(index) {
-  // Remove the received file from your persistent array
-  persistentReceivedFiles.splice(index, 1);
-  // Save the updated array to local storage
-  saveReceivedFilesToLocalStorage(persistentReceivedFiles);
-  // Refresh the UI to reflect the change
-  updateReceivedFilesUI();
-};
-window.reAckTransfer = function(key) {
-  let transfer = activeTransfers[key];
-  if (!transfer) return;
-  const senderStr = key.split("_")[0];
-  const fileId = key.split("_")[1];
-  console.log("[Re-ACK] Manually resending cumulative ACK for:", key);
-  sendCumulativeAck(transfer, senderStr, fileId, true);
-};
-function cancelReceiverTransfer(key) {
-  let transfer = activeTransfers[key];
-  if (!transfer) return;
-  
-  // Clear any pending timers associated with this transfer.
-  if (transfer.ackTimer) {
-    clearTimeout(transfer.ackTimer);
-    transfer.ackTimer = null;
-  }
-  
-  updateStatus("Receiver transfer " + key + " canceled.");
-  
-  // Remove the transfer from active transfers.
-  delete activeTransfers[key];
-  
-  // Update the receiver progress UI to reflect the cancellation.
-  updateReceiverProgressUI();
-}
+    window.downloadReceivedFile = function(index) {
+      const file = persistentReceivedFiles[index];
+      if (!file) return;
+      const a = document.createElement('a');
+      a.href = file.dataUrl;
+      a.download = file.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+    
+    window.clearSentFile = function(index) {
+      persistentSentFiles.splice(index, 1);
+      saveSentFilesToLocalStorage(persistentSentFiles);
+      updateSentFilesUI();
+    };
+    window.deleteReceivedFile = function(index) {
+      // Remove the received file from your persistent array
+      persistentReceivedFiles.splice(index, 1);
+      // Save the updated array to local storage
+      saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+      // Refresh the UI to reflect the change
+      updateReceivedFilesUI();
+    };
+    window.reAckTransfer = function(key) {
+      let transfer = activeTransfers[key];
+      if (!transfer) return;
+      const senderStr = key.split("_")[0];
+      const fileId = key.split("_")[1];
+      console.log("[Re-ACK] Manually resending cumulative ACK for:", key);
+      sendCumulativeAck(transfer, senderStr, fileId, true);
+    };
+    function cancelReceiverTransfer(key) {
+      let transfer = activeTransfers[key];
+      if (!transfer) return;
+      
+      // Clear any pending timers associated with this transfer.
+      if (transfer.ackTimer) {
+        clearTimeout(transfer.ackTimer);
+        transfer.ackTimer = null;
+      }
+      
+      updateStatus("Receiver transfer " + key + " canceled.");
+      
+      // Remove the transfer from active transfers.
+      delete activeTransfers[key];
+      
+      // Update the receiver progress UI to reflect the cancellation.
+      updateReceiverProgressUI();
+    }
+    
+    /***********************
+     * processRawPacket Function (Receiver Side)
+     ***********************/
+    function processRawPacket(packet) {
+      console.log("Processing raw packet:", packet);
+      let packetBytes;
+      if (typeof packet === 'string') {
+        packetBytes = new TextEncoder().encode(packet);
+      } else if (packet instanceof ArrayBuffer) {
+        packetBytes = new Uint8Array(packet);
+      } else if (packet instanceof Uint8Array) {
+        packetBytes = packet;
+      } else {
+        console.log("Unrecognized packet type; ignoring.");
+        return;
+      }
+    
+      // Basic KISS framing checks
+      if (packetBytes[0] !== 0xC0 || packetBytes[packetBytes.length - 1] !== 0xC0) {
+        console.error("Invalid KISS frame: missing framing bytes.");
+        return;
+      }
+    
+      // AX.25 frame extraction
+      const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
+      if (ax25Frame.length < 16) {
+        return;
+      }
+      const infoField = ax25Frame.slice(16);
+      let infoText = new TextDecoder().decode(infoField);
+    
+      // Check for an ACK from the remote sender
+      if (infoText.indexOf(":ACK:") !== -1) {
+        let ackValue = processAckFrame(infoText);
+        if (ackValue === null) return;
+        console.log("Sender received ACK:", ackValue, "at", new Date().toLocaleTimeString());
+        processAck(ackValue);
+        if (ackTimer) {
+          clearTimeout(ackTimer);
+          ackTimer = null;
+        }
+        burstInProgress = false;
+        return;
+      }
+    
+      // Minimal sanity checks for packet format.
+      if (infoText.indexOf('>') < 0) {
+        console.log("Packet format invalid: missing '>'");
+        return;
+      }
+      if (infoText.charAt(19) !== ':') {
+        console.log("Packet format invalid: missing ':' at position 19");
+        return;
+      }
+    
+      // Parse callsigns, fileId, seq, burstTo, etc.
+      let senderStr   = infoText.substring(0, 9).trim();
+      let receiverStr = infoText.substring(10, 19).trim();
+      let fileId      = infoText.substring(20, 22).trim();
+      if (infoText.charAt(22) !== ':') {
+        console.log("Packet format invalid: missing colon after file ID.");
+        return;
+      }
+      let seq     = parseInt(infoText.substring(23, 25), 16);
+      let burstTo = parseInt(infoText.substring(25, 27), 16);
+    
+      // If not intended for our callsign, ignore.
+      if (receiverStr !== document.getElementById('senderCallsign').value.trim()) {
+        console.log("Ignoring packet not intended for me (packet receiver:",
+          receiverStr, ", local:", document.getElementById('senderCallsign').value.trim(), ")");
+        return;
+      }
+    
+      // Extract payload after the optional "/<total>:" for seq=1.
+      let offset = (seq === 1) ? 31 : 28;
+      let payloadChunk = unescapeKissData(infoField.slice(offset));
+    
+      // Identify the unique transfer key.
+      let transferKeyFinal = senderStr + "_" + fileId;
+    
+      // If it's the first packet (seq===1), create a new transfer record.
+      if (seq === 1 && !activeTransfers[transferKeyFinal]) {
+        console.log("Starting new transfer from sender", senderStr, "with file ID", fileId);
+        activeTransfers[transferKeyFinal] = {
+          totalChunks: parseInt(infoText.substring(28, 30), 16),
+          received: {},
+          startTime: Date.now(),
+          duplicateCount: 0,
+          lastUpdate: Date.now(),
+          ackTimer: null,
+          lastPacketTime: Date.now(),
+          ackDelay: 2000,
+          currentBurstBoundary: 0,
+          burstStartTime: Date.now()
+        };
+        let headerPayloadText = new TextDecoder().decode(payloadChunk);
+        let parts = headerPayloadText.split("|");
+        activeTransfers[transferKeyFinal].header = {
+          fileName: parts[0],
+          originalSize: parseInt(parts[1], 10),
+          compressedSize: parseInt(parts[2], 10),
+          md5: parts[3],
+          fileId: parts[4],
+          compression: (parts[5] === "1"),
+          expectedTotal: parts.length >= 7 ? parseInt(parts[6], 10) : parseInt(infoText.substring(28, 30), 16)
+        };
+        activeTransfers[transferKeyFinal].totalChunks = activeTransfers[transferKeyFinal].header.expectedTotal;
+        console.log("Received header from sender", senderStr, "for file ID", fileId, activeTransfers[transferKeyFinal].header);
+      }
+    
+      let transfer = activeTransfers[transferKeyFinal];
+      if (!transfer) {
+        console.error("No active transfer record for", transferKeyFinal);
+        return;
+      }
+    
+      let isDuplicate = !!transfer.received[seq];
+      if (!isDuplicate) {
+        transfer.received[seq] = payloadChunk;
+      } else {
+        transfer.duplicateCount++;
+        console.log("Duplicate packet", seq, "received from", transferKeyFinal);
+      }
+    
+      if (!transfer.rawBytesReceived) transfer.rawBytesReceived = 0;
+      transfer.rawBytesReceived += infoField.length;
+      transfer.lastUpdate = Date.now();
+      console.log("Stored packet", seq, "from", transferKeyFinal, `(${Object.keys(transfer.received).length} / ${transfer.totalChunks})`);
+      updateReceiverProgressUI();
+    
+      if (seq === 1) {
+        // Change ACK for metadata packet from "02" to "01"
+        sendAckFromReceiver(senderStr, fileId, "01");
+        return;
+      }
+    
+      let contiguous = 2;
+      while (transfer.received[contiguous]) contiguous++;
+      transfer.lastAcked = contiguous - 1;
+    
+      if (!isDuplicate && !transfer.completed) {
+        transfer.lastPacketTime = Date.now();
+        if (transfer.ackTimer) {
+          clearTimeout(transfer.ackTimer);
+          transfer.ackTimer = null;
+        }
+        if ((contiguous - 1) >= burstTo) {
+          console.log("Receiver: Reached highest burst seq (", burstTo, "), ACKing immediately.");
+          sendCumulativeAck(transfer, senderStr, fileId, true);
+        } else {
+          transfer.ackTimer = setTimeout(() => {
+            console.log("Receiver: 2s idle, sending partial/cumulative ACK");
+            sendCumulativeAck(transfer, senderStr, fileId);
+            transfer.ackTimer = null;
+          }, transfer.ackDelay);
+        }
+      }
+    
+      let allPacketsReceived = transfer.totalChunks && Object.keys(transfer.received).length === transfer.totalChunks;
+    
+      if (!transfer.completed && allPacketsReceived) {
+        if (transfer.downloadTriggered) return;
+        transfer.downloadTriggered = true;
+    
+        if (transfer.header && persistentReceivedFiles.some(f => f.fileId === transfer.header.fileId && f.sender === senderStr)) {
+          console.log("File already processed, skipping reassembly and download.");
+          return;
+        }
+    
+        console.log("All packets received for", transferKeyFinal, "- reassembling file...");
+        if (!transfer.header) {
+          console.error("Missing header for", transferKeyFinal);
+          return;
+        }
+    
+        let dataChunks = [];
+        for (let i = 2; i <= transfer.totalChunks; i++) {
+          if (!transfer.received[i]) {
+            console.error("Missing packet", i, "for", transferKeyFinal);
+            return;
+          }
+          dataChunks.push(transfer.received[i]);
+        }
+        let totalLength = dataChunks.reduce((acc, c) => acc + c.length, 0);
+        let fullCompressed = new Uint8Array(totalLength);
+        let offset = 0;
+        dataChunks.forEach(chunk => {
+          fullCompressed.set(chunk, offset);
+          offset += chunk.length;
+        });
+        console.log("Reassembled compressed file length:", fullCompressed.length);
+    
+        let decompressed;
+        if (transfer.header.compression) {
+          try {
+            decompressed = pako.inflate(fullCompressed);
+          } catch (err) {
+            console.error("Error decompressing file for", transferKeyFinal, ":", err);
+            return;
+          }
+        } else {
+          decompressed = fullCompressed;
+        }
+        if (!decompressed) {
+          console.error("Decompression failed: decompressed data is undefined");
+          return;
+        }
+        console.log("Decompressed file length:", decompressed.length);
+    
+        const blob = new Blob([decompressed]);
+        const elapsedTotal = Date.now() - transfer.startTime;
+        const dupCount = transfer.duplicateCount;
+        const computedMd5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(decompressed)).toString();
+        const checksumMatch = (computedMd5 === transfer.header.md5);
+    
+        const fileObj = {
+          sender: senderStr,
+          fileName: transfer.header.fileName,
+          originalSize: transfer.header.originalSize,
+          compressedSize: transfer.header.compressedSize,
+          size: blob.size,
+          elapsed: elapsedTotal,
+          duplicates: dupCount,
+          totalPackets: transfer.totalChunks,
+          timestamp: Date.now(),
+          checksumMatch: checksumMatch,
+          bytesReceived: transfer.rawBytesReceived || 0,
+          fileId: transfer.header.fileId
+        };
+    
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          fileObj.dataUrl = e.target.result;
+          let existingIndex = persistentReceivedFiles.findIndex(
+            f => f.fileId === fileObj.fileId && f.sender === fileObj.sender
+          );
+          if (existingIndex !== -1) {
+            persistentReceivedFiles[existingIndex] = fileObj;
+          } else {
+            persistentReceivedFiles.push(fileObj);
+            existingIndex = persistentReceivedFiles.length - 1;
+          }
+          saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+          updateReceivedFilesUI();
+    
+          if (checksumMatch) {
+            downloadReceivedFile(existingIndex);
+          } else {
+            console.error("Checksum does not match; automatic download aborted.");
+            updateStatus("Received file failed checksum verification.");
+          }
+        };
+        reader.onerror = function(e) {
+          console.error("Error converting Blob:", e);
+        };
+        reader.readAsDataURL(blob);
+    
+        console.log("Receiver: Entire file complete, sending final ACK now.");
+        sendCumulativeAck(transfer, senderStr, fileId, true);
+    
+        console.log("File transfer complete for", transferKeyFinal);
+        transfer.completed = true;
+        transfer.completionTime = Date.now();
+        if (transfer.resendAckTimer) {
+          clearTimeout(transfer.resendAckTimer);
+          transfer.resendAckTimer = null;
+        }
+        delete activeTransfers[transferKeyFinal];
+        updateReceiverProgressUI();
+      }
+    }
+    
+    /***********************
+     * Sender ACK Handling & Burst Sending
+     ***********************/
+    function processAck(ackContent) {
+      if (ackContent === "01") {
+        if (!headerAckReceived) {
+          headerAckReceived = true;
+          currentPacketIndex = 1;
+          console.log("Processed header ACK: 01; setting currentPacketIndex to 1");
+          if (!burstInProgress) {
+            sendBurstPackets();
+          }
+        } else {
+          console.log("Duplicate header ACK received; resending next set of packets.");
+          sendBurstPackets();
+        }
+        return;
+      }
+      
+      if (ackContent.indexOf('-') !== -1 || ackContent.indexOf(',') !== -1) {
+        processRangeAck(ackContent);
+        return;
+      }
+      
+      if (ackContent === lastRangeAck) {
+        duplicateAckCount++;
+        console.log("Received duplicate ACK (" + duplicateAckCount + "):", ackContent);
+        sendBurstPackets();
+        if (duplicateAckCount >= 3) {
+          console.log("Three duplicate ACKs received; resending missing packets:", missingPackets);
+          missingPackets.forEach(seq => { 
+            sendPacket(seq); 
+            totalRetries++; 
+          });
+          duplicateAckCount = 0;
+        }
+        return;
+      } else {
+        duplicateAckCount = 0;
+        lastRangeAck = ackContent;
+      }
+      
+      let ackNum = parseInt(ackContent, 16);
+      if (!isNaN(ackNum) && ackNum > currentPacketIndex) {
+        currentPacketIndex = ackNum;
+        console.log("Sender: Cumulative ACK updated currentPacketIndex to", currentPacketIndex);
+        updateSenderProgressUI();
+        if (!burstInProgress && currentPacketIndex < totalPackets) {
+          sendBurstPackets();
+        }
+      }
+    }
+    
+    function updateBurstSlider(index) {
+      const slider = document.getElementById('burstSlider');
+      const label = document.getElementById('burstValue');
+      if (slider) {
+        slider.value = index;
+      }
+      if (label) {
+        label.textContent = dynamicBurstSizes[index];
+      }
+    }
+    
+    /***********************
+     * Connection Setup Functions
+     ***********************/
+    function updateConnectionIndicator() {
+      const dot = document.getElementById('connectionStatusDot');
+      if (document.getElementById('connectionType').value === 'websockets')
+        dot.style.backgroundColor = (socket && socket.connected) ? 'green' : 'red';
+      else
+        dot.style.backgroundColor = serialConnected ? 'green' : 'red';
+      updateSendButtonStatus();
+    }
+    
+    function updateSendButtonStatus() {
+      const sendBtn = document.getElementById('sendFileBtn');
+      sendBtn.disabled = (document.getElementById('connectionType').value === 'websockets')
+                         ? !(socket && socket.connected) : !serialConnected;
+    }
+    
+    function initializeWebSocket() {
+      if (socket) return;
+      socket = io('/');
+      socket.onAny((event, ...args) => { if (event === "raw_kiss_frame") console.log('Socket event:', event, args); });
+      socket.on('connect', () => { console.log("Websocket connected, id:", socket.id); updateConnectionIndicator(); });
+      socket.on('disconnect', () => { console.log("Websocket disconnected."); updateConnectionIndicator(); });
+      socket.on('connect_error', (err) => { console.error("Socket connection error:", err); updateConnectionIndicator(); });
+      socket.on('raw_kiss_frame', (packet) => { console.log("Received raw_kiss_frame event:", packet); processRawPacket(packet); });
+      updateConnectionIndicator();
+    }
+    
+    async function readSerial() {
+      while (serialPort && serialPort.readable) {
+        const reader = serialPort.readable.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) {
+              kissBuffer = concatUint8Arrays(kissBuffer, value);
+              let startIndex = kissBuffer.indexOf(0xC0);
+              while (startIndex !== -1) {
+                let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
+                if (endIndex === -1) break;
+                const frame = kissBuffer.slice(startIndex, endIndex + 1);
+                processRawPacket(frame);
+                kissBuffer = kissBuffer.slice(endIndex + 1);
+                startIndex = kissBuffer.indexOf(0xC0);
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error reading serial port:", error);
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    }
+    
+    /***********************
+     * Sender UI: Manual Resend and Cancel Functions
+     ***********************/
+    function manualResend() {
+      console.log("Manual Re-Send triggered by sender. Resending missing packets...");
+      sendBurstPackets();
+    }
+    
+    function cancelSenderTransfer() {
+      if (fileTransferInProgress) {
+        fileTransferInProgress = false;
+        clearTimeout(ackTimer);
+        updateStatus("File transfer canceled.");
+        updateSenderProgressUI();
+        document.getElementById('sendFileBtn').disabled = false;
+      }
+    }
+    
+    function sendBurstPackets() {
+      if (!fileTransferInProgress) return;
+      if (missingPackets.length > 0) {
+        console.log("Sender: Resending missing packets:", missingPackets);
+        missingPackets.forEach(seq => { 
+          sendPacket(seq);
+          totalRetries++; 
+        });
+        let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
+        const ackTimeout = effectiveBurst * 2500 + 500;
+        senderState = "Awaiting ACK";
+        senderStateTimestamp = Date.now();
+        ackTimer = setTimeout(() => {
+          console.log("Sender: No ACK received for missing packets; resending missing packets again.");
+          missingPackets.forEach(seq => { sendPacket(seq); });
+        }, ackTimeout);
+        return;
+      }
+      if (currentPacketIndex >= totalPackets) {
+        updateStatus("File transfer complete.");
+        sentFileStats.endTime = Date.now();
+        sentFileStats.totalTime = ((sentFileStats.endTime - sentFileStats.startTime) / 1000).toFixed(2);
+        sentFileStats.totalRetries = totalRetries + currentRetries;
+        sentFileStats.timestamp = sentFileStats.startTime;
+        persistentSentFiles.push(sentFileStats);
+        saveSentFilesToLocalStorage(persistentSentFiles);
+        updateSentFilesUI();
+        sentFileStats = null;
+        totalRetries = 0;
+        fileTransferInProgress = false;
+        updateSenderProgressUI();
+        for (let key in activeTransfers) {
+          if (activeTransfers[key].completed) {
+            delete activeTransfers[key];
+          }
+        }
+        updateReceiverProgressUI();
+        document.getElementById('sendFileBtn').disabled = false;
+        return;
+      }
+      if (burstInProgress) return;
+      burstInProgress = true;
+      let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
+      let startSeq = currentPacketIndex + 1;
+      let endSeq = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
+      updateSenderProgressUI();
+      for (let seq = startSeq; seq <= endSeq; seq++) {
+        sendPacket(seq);
+      }
+    
+      const ackTimeout = effectiveBurst * 2500 + 500;
+      senderState = "Awaiting ACK";
+      senderStateTimestamp = Date.now();
+      ackTimer = setTimeout(() => {
+        console.log("Sender: No ACK received; re-sending missing packets again.");
+        totalRetries += missingPackets.length;
+        missingPackets.forEach(seq => { sendPacket(seq); });
+        burstInProgress = false;
+      }, ackTimeout);
+    }
+    
+    function sendPacket(seq) {
+      if (seq > highestPacketSentSoFar) {
+        highestPacketSentSoFar = seq; 
+      }
+      let payloadChunk = fileDataChunks[seq - 1];
+      let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
+      let currentBurstTo = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
+      if (seq === 1) {
+        currentBurstTo = 1;
+      }
+      let packet = buildPacket(sender, receiver, seq, totalPackets, payloadChunk, fileId, currentBurstTo);
+      sentFileStats.bytesSent = (sentFileStats.bytesSent || 0) + packet.length;
+      console.log(`Sending packet ${seq} of ${totalPackets}`);
+      const kissFrame = buildKissFrame(packet);
+      if (document.getElementById('connectionType').value === 'websockets') {
+        if (socket) socket.emit('raw_kiss_frame', kissFrame);
+      } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+        serialWriter.write(kissFrame).catch(err => console.error("Error sending packet:", err));
+      }
+    }
+    
+    /***********************
+     * KISS Framing Functions
+     ***********************/
+    function escapeKissData(data) {
+      let output = [];
+      for (let i = 0; i < data.length; i++) {
+        let byte = data[i];
+        if (byte === 0xC0) output.push(0xDB, 0xDC);
+        else if (byte === 0xDB) output.push(0xDB, 0xDD);
+        else output.push(byte);
+      }
+      return new Uint8Array(output);
+    }
+    
+    function unescapeKissData(data) {
+      let output = [];
+      for (let i = 0; i < data.length; i++) {
+        if (data[i] === 0xDB && i + 1 < data.length) {
+          if (data[i+1] === 0xDC) { output.push(0xC0); i++; continue; }
+          else if (data[i+1] === 0xDD) { output.push(0xDB); i++; continue; }
+        }
+        output.push(data[i]);
+      }
+      return new Uint8Array(output);
+    }
+    
+    function buildKissFrame(aprsPacket) {
+      const escapedPacket = escapeKissData(aprsPacket);
+      const KISS_FLAG = 0xC0, KISS_CMD_DATA = 0x00;
+      let frame = new Uint8Array(1 + 1 + escapedPacket.length + 1);
+      frame[0] = KISS_FLAG;
+      frame[1] = KISS_CMD_DATA;
+      frame.set(escapedPacket, 2);
+      frame[frame.length - 1] = KISS_FLAG;
+      return frame;
+    }
+    
+    function concatUint8Arrays(a, b) {
+      let c = new Uint8Array(a.length + b.length);
+      c.set(a, 0);
+      c.set(b, a.length);
+      return c;
+    }
+    
+    // Expose processRawPacket globally so that socket events can call it.
+    window.processRawPacket = processRawPacket;
   </script>
 </body>
 </html>
