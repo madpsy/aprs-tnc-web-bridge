@@ -43,7 +43,7 @@
     <h2>Introduction</h2>
     <p>
       The <strong>KISS File Transfer Protocol</strong> is implemented in the <code>files.py</code> script.
-      It is a custom, lightweight protocol built for reliable file transfer over TCP or serial connections.
+      It is a custom, lightweight protocol built for reliable file transfer via a KISS TNC over TCP or serial connections.
       The protocol uses KISS framing with an AX.25-style header and supports features such as dynamic sliding window
       sizing, cumulative acknowledgments, retransmission on timeouts, a final handshake, and optional file compression.
     </p>
@@ -77,7 +77,7 @@ function buildKISSFrame(packet):
     return FLAG + CMD + escaped_packet + FLAG
     </pre>
     <p>
-      The function <code>escapeSpecialBytes</code> is responsible for scanning the packet data and escaping any occurrences of <code>0xC0</code> or <code>0xDB</code> as needed.
+      The function <code>escapeSpecialBytes</code> scans the packet data and escapes any occurrences of <code>0xC0</code> or <code>0xDB</code> as needed.
     </p>
 
     <h3>AX.25 Header</h3>
@@ -237,17 +237,17 @@ total_packets = len(chunks) + 1  // include header
         <ul>
           <li>The sender sends the header packet (sequence 1) using KISS framing.</li>
           <li>The receiver processes the header, extracts metadata, and sends an ACK with value <code>0001</code> to confirm readiness.</li>
-          <li><strong>Pseudocode:</strong>
+          <li>
+            <strong>Pseudocode:</strong>
             <pre>
 sender:
     header_packet = buildHeaderPacket(metadata, file_id, burst_to=1)
     sendFrame(header_packet)
+    header_start = currentTime()
     ack = waitForACK(timeout)
-
-receiver:
-    header_packet = receiveFrame()
-    metadata = parseHeader(header_packet)
-    sendACK("0001")
+    header_ack_duration = currentTime() - header_start
+    // Update per-packet timeout to account for 1 sent header + 1 ACK = 2 events
+    per_packet_timeout = header_ack_duration / 2
             </pre>
           </li>
         </ul>
@@ -258,20 +258,37 @@ receiver:
           <li>The sender transmits bursts of data packets governed by a dynamic sliding window.</li>
           <li>After sending a burst, the sender waits for a cumulative ACK indicating the highest contiguous sequence received.</li>
           <li>If all packets in the burst are acknowledged, the window may be increased; otherwise, it is decreased and missing packets are retransmitted.</li>
-          <li><strong>Pseudocode:</strong>
+          <li>
+            <strong>Pseudocode:</strong>
             <pre>
-window = initial_window
+window = initial_window_value  // e.g., 4
+consecutive_successes = 0
+
 while current_packet ≤ total_packets:
-    for seq in current_packet to (current_packet + window - 1):
+    burst_start = currentTime()
+    // Send a burst of packets from current_packet to min(current_packet + window - 1, total_packets)
+    for seq in current_packet to min(current_packet + window - 1, total_packets):
         sendFrame(buildDataPacket(seq, burst_to))
-    ack = waitForACK(window_timeout)
-    if ack is as expected:
+    
+    ack = waitForACK(timeout = (num_packets * per_packet_timeout + timeout_seconds))
+    
+    // Measure burst round-trip duration
+    burst_duration = currentTime() - burst_start
+    // Update per-packet timeout using: (burst_duration / (number_of_packets_sent + 1))
+    // The +1 accounts for the ACK received for the burst.
+    per_packet_timeout = burst_duration / (number_of_packets_sent + 1)
+    log("Updated per-packet timeout to", per_packet_timeout)
+    
+    if ack == expected_cumulative_value:
+        consecutive_successes += 1
         current_packet = ack + 1
-        if consecutive_successes ≥ threshold:
-            window = increase(window)
+        if consecutive_successes ≥ threshold and window < max_window:
+            window = window + 1   // Increase window size
+            consecutive_successes = 0
     else:
-        window = decrease(window)
-        retransmit missing packets
+        window = max(window - 1, 1)   // Decrease window size
+        consecutive_successes = 0
+        // Optionally retransmit missing packets
             </pre>
           </li>
         </ul>
@@ -299,13 +316,14 @@ sendFrame("SENDER>RECEIVER:" + file_id + ":ACK:FIN-ACK")
             </pre>
           </li>
           <li>The sender then waits for <code>1.5 + timeout-seconds</code> seconds for any retransmitted cumulative ACK and resends the FIN‑ACK if necessary.</li>
-          <li><strong>Pseudocode:</strong>
+          <li>
+            <strong>Pseudocode:</strong>
             <pre>
 if allPacketsAcknowledged():
     sendFrame(buildFINACK(file_id))
     wait_time = 1.5 + timeout_seconds
-    end_time = currentTime + wait_time
-    while currentTime < end_time:
+    end_time = currentTime() + wait_time
+    while currentTime() < end_time:
         if retransmittedACKReceived():
             sendFrame(buildFINACK(file_id))
             break
@@ -319,23 +337,28 @@ if allPacketsAcknowledged():
   <div class="section">
     <h2>Dynamic Sliding Window and Retry Mechanism</h2>
     <p>
-      To optimize throughput, the sender uses a dynamic sliding window. The following pseudocode illustrates the mechanism:
+      To optimize throughput, the sender uses a dynamic sliding window. The sender also dynamically adjusts the per-packet timeout based on measured round-trip times. Importantly, the calculation accounts for the fact that the timing includes both the packets sent and the ACK received. For example, if 4 packets are sent, the measured duration is divided by 5 (4 + 1) to compute the new per-packet timeout.
     </p>
     <pre>
 window = initial_window_value  // e.g., 4
 consecutive_successes = 0
 
 while current_packet ≤ total_packets:
-    // Send a burst of packets
+    burst_start = currentTime()
     for seq in current_packet to min(current_packet + window - 1, total_packets):
         sendFrame(buildDataPacket(seq, burst_to))
     
-    ack = waitForACK(timeout = (num_packets * 1.5 + timeout_seconds))
+    ack = waitForACK(timeout = (num_packets * per_packet_timeout + timeout_seconds))
+    
+    burst_duration = currentTime() - burst_start
+    // Update per-packet timeout: include both the sent packets and the ACK in the calculation.
+    per_packet_timeout = burst_duration / (number_of_packets_sent + 1)
+    log("Updated per-packet timeout to", per_packet_timeout)
     
     if ack == expected_cumulative_value:
         consecutive_successes += 1
         current_packet = ack + 1
-        if consecutive_successes ≥ 2 and window < max_window:
+        if consecutive_successes ≥ threshold and window < max_window:
             window = window + 1   // Increase window size
             consecutive_successes = 0
     else:
@@ -344,7 +367,7 @@ while current_packet ≤ total_packets:
         // Optionally retransmit missing packets
     </pre>
     <p>
-      The timeout is dynamically calculated and increases exponentially on failures.
+      This approach allows the sender to adapt its timeout based on real-world conditions, improving both performance and reliability.
     </p>
   </div>
 
@@ -429,9 +452,12 @@ python3 files.py --role receiver --my-callsign DESTCALL --host 0.0.0.0 --port 90
       receiver can recover gracefully from packet loss or delays.
     </p>
     <p>
+      The dynamic per-packet timeout mechanism adapts the base timeout by measuring the round-trip time of each burst (or header exchange)
+      and dividing by the number of packets sent plus one for the ACK. This allows the protocol to automatically tune itself to prevailing network conditions.
+    </p>
+    <p>
       The pseudocode provided in various sections can serve as a starting point for developers looking to write their own implementation of this protocol.
     </p>
   </div>
 </body>
 </html>
-
