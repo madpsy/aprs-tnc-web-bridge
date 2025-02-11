@@ -495,7 +495,7 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.WindowSize, "window-size", "auto", "Window (burst) size as an integer, or 'auto'")
 	flag.StringVar(&args.Connection, "connection", "tcp", "Connection type: tcp or serial")
 	flag.BoolVar(&args.Debug, "debug", false, "Enable debug output")
-	flag.StringVar(&args.Host, "host", "127.0.0.1", "TCP host (for sender: remote host; for receiver: bind address)")
+	flag.StringVar(&args.Host, "host", "127.0.0.1", "TCP host")
 	flag.IntVar(&args.Port, "port", 9001, "TCP port")
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g. COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial")
