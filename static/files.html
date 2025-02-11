@@ -146,7 +146,8 @@
     let currentPacketIndex = 0;
     let currentRetries = 0, totalRetries = 0;
     let fileTransferInProgress = false, ackTimer = null, sentFileStats = null;
-    const CHUNK_SIZE = 209;
+    // CHUNK_SIZE reduced from 209 to 205 to accommodate the extra 4 header bytes in data packets
+    const CHUNK_SIZE = 205;
     let headerAckReceived = false;
     let burstInProgress = false;
     let lastRangeAck = "";
@@ -522,11 +523,12 @@
      * Packet Building Functions
      ***********************/
     function buildPacket(sender, receiver, seq, totalPackets, payloadChunk, fileId, burstTo) {
-      let seqStr = seq.toString(16).padStart(2, '0');
-      let burstToStr = burstTo.toString(16).padStart(2, '0');
+      // Changed hex fields from 2 to 4 characters
+      let seqStr = seq.toString(16).padStart(4, '0');
+      let burstToStr = burstTo.toString(16).padStart(4, '0');
       let infoStr = "";
       if (seq === 1) {
-        let totalStr = totalPackets.toString(16).padStart(2, '0');
+        let totalStr = totalPackets.toString(16).padStart(4, '0');
         infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' +
                   fileId + ':' + seqStr + burstToStr + '/' + totalStr + ':';
       } else {
@@ -560,14 +562,14 @@
         if (receivedSeq[i] === prev + 1) {
           prev = receivedSeq[i];
         } else {
-          ackParts.push(start === prev ? start.toString(16).padStart(2, '0') :
-            start.toString(16).padStart(2, '0') + "-" + prev.toString(16).padStart(2, '0'));
+          ackParts.push(start === prev ? start.toString(16).padStart(4, '0') :
+            start.toString(16).padStart(4, '0') + "-" + prev.toString(16).padStart(4, '0'));
           start = receivedSeq[i];
           prev = receivedSeq[i];
         }
       }
-      ackParts.push(start === prev ? start.toString(16).padStart(2, '0') :
-        start.toString(16).padStart(2, '0') + "-" + prev.toString(16).padStart(2, '0'));
+      ackParts.push(start === prev ? start.toString(16).padStart(4, '0') :
+        start.toString(16).padStart(4, '0') + "-" + prev.toString(16).padStart(4, '0'));
       let ackStr = ackParts.join(",");
       
       if (!forceSend && lastRangeAck === ackStr) {
@@ -676,12 +678,12 @@
     
     // --- Updated processAck to also handle duplicate single ACKs ---
     function processAck(ackContent) {
-      // MODIFICATION: Change header ACK from "02" to "01"
-      if (ackContent === "01") {
+      // MODIFICATION: Change header ACK from "02" to "01" now with 4 hex digits: "0001"
+      if (ackContent === "0001") {
         if (!headerAckReceived) {
           headerAckReceived = true;
           currentPacketIndex = 1;
-          console.log("Processed header ACK: 01; setting currentPacketIndex to 1");
+          console.log("Processed header ACK: 0001; setting currentPacketIndex to 1");
           if (!burstInProgress) {
             sendBurstPackets();
           }
@@ -729,6 +731,58 @@
         }
       }
     }
+    
+    // --- Duplicate processAck definition updated as well ---
+    function processAck(ackContent) {
+      if (ackContent === "0001") {
+        if (!headerAckReceived) {
+          headerAckReceived = true;
+          currentPacketIndex = 1;
+          console.log("Processed header ACK: 0001; setting currentPacketIndex to 1");
+          if (!burstInProgress) {
+            sendBurstPackets();
+          }
+        } else {
+          console.log("Duplicate header ACK received; resending next set of packets.");
+          sendBurstPackets();
+        }
+        return;
+      }
+      
+      if (ackContent.indexOf('-') !== -1 || ackContent.indexOf(',') !== -1) {
+        processRangeAck(ackContent);
+        return;
+      }
+      
+      if (ackContent === lastRangeAck) {
+        duplicateAckCount++;
+        console.log("Received duplicate ACK (" + duplicateAckCount + "):", ackContent);
+        sendBurstPackets();
+        if (duplicateAckCount >= 3) {
+          console.log("Three duplicate ACKs received; resending missing packets:", missingPackets);
+          missingPackets.forEach(seq => { 
+            sendPacket(seq); 
+            totalRetries++; 
+          });
+          duplicateAckCount = 0;
+        }
+        return;
+      } else {
+        duplicateAckCount = 0;
+        lastRangeAck = ackContent;
+      }
+      
+      let ackNum = parseInt(ackContent, 16);
+      if (!isNaN(ackNum) && ackNum > currentPacketIndex) {
+        currentPacketIndex = ackNum;
+        console.log("Sender: Cumulative ACK updated currentPacketIndex to", currentPacketIndex);
+        updateSenderProgressUI();
+        if (!burstInProgress && currentPacketIndex < totalPackets) {
+          sendBurstPackets();
+        }
+      }
+    }
+    
     function updateBurstSlider(index) {
       const slider = document.getElementById('burstSlider');
       const label = document.getElementById('burstValue');
@@ -1042,8 +1096,9 @@ File ID: ${fileId}`);
         console.log("Packet format invalid: missing colon after file ID.");
         return;
       }
-      let seq     = parseInt(infoText.substring(23, 25), 16);
-      let burstTo = parseInt(infoText.substring(25, 27), 16);
+      // Updated indices: now seq is 4 hex digits (indices 23-27) and burstTo is at 27-31
+      let seq     = parseInt(infoText.substring(23, 27), 16);
+      let burstTo = parseInt(infoText.substring(27, 31), 16);
     
       // If not intended for our callsign, ignore.
       if (receiverStr !== document.getElementById('senderCallsign').value.trim()) {
@@ -1053,7 +1108,8 @@ File ID: ${fileId}`);
       }
     
       // Extract payload after the optional "/<total>:" for seq=1.
-      let offset = (seq === 1) ? 31 : 28;
+      // For header packets, the info string is now 37 bytes; for non-header packets, 32 bytes.
+      let offset = (seq === 1) ? 37 : 32;
       let payloadChunk = unescapeKissData(infoField.slice(offset));
     
       // Identify the unique transfer key.
@@ -1063,14 +1119,15 @@ File ID: ${fileId}`);
       if (seq === 1 && !activeTransfers[transferKeyFinal]) {
         console.log("Starting new transfer from sender", senderStr, "with file ID", fileId);
         activeTransfers[transferKeyFinal] = {
-          totalChunks: parseInt(infoText.substring(28, 30), 16),
+          // For header packets, the totalChunks field is now taken from indices 32-36 (instead of 28-30)
+          totalChunks: parseInt(infoText.substring(32, 36), 16),
           received: {},
           startTime: Date.now(),
           duplicateCount: 0,
           lastUpdate: Date.now(),
           ackTimer: null,
           lastPacketTime: Date.now(),
-          ackDelay: 2000,
+          ackDelay: 5000,
           currentBurstBoundary: 0,
           burstStartTime: Date.now()
         };
@@ -1083,7 +1140,7 @@ File ID: ${fileId}`);
           md5: parts[3],
           fileId: parts[4],
           compression: (parts[5] === "1"),
-          expectedTotal: parts.length >= 7 ? parseInt(parts[6], 10) : parseInt(infoText.substring(28, 30), 16)
+          expectedTotal: parts.length >= 7 ? parseInt(parts[6], 10) : parseInt(infoText.substring(32, 36), 16)
         };
         activeTransfers[transferKeyFinal].totalChunks = activeTransfers[transferKeyFinal].header.expectedTotal;
         console.log("Received header from sender", senderStr, "for file ID", fileId, activeTransfers[transferKeyFinal].header);
@@ -1110,8 +1167,8 @@ File ID: ${fileId}`);
       updateReceiverProgressUI();
     
       if (seq === 1) {
-        // Change ACK for metadata packet from "02" to "01"
-        sendAckFromReceiver(senderStr, fileId, "01");
+        // Change ACK for metadata packet from "02" to "01" now becomes "0001"
+        sendAckFromReceiver(senderStr, fileId, "0001");
         return;
       }
     
@@ -1255,11 +1312,11 @@ File ID: ${fileId}`);
      * Sender ACK Handling & Burst Sending
      ***********************/
     function processAck(ackContent) {
-      if (ackContent === "01") {
+      if (ackContent === "0001") {
         if (!headerAckReceived) {
           headerAckReceived = true;
           currentPacketIndex = 1;
-          console.log("Processed header ACK: 01; setting currentPacketIndex to 1");
+          console.log("Processed header ACK: 0001; setting currentPacketIndex to 1");
           if (!burstInProgress) {
             sendBurstPackets();
           }
