@@ -75,6 +75,15 @@
       <label for="fileInput" class="form-label">File to Send</label>
       <input type="file" id="fileInput" class="form-control">
     </div>
+    <!-- New Timeout Settings -->
+    <div class="mb-3">
+      <label for="timeoutSeconds" class="form-label">Timeout Seconds</label>
+      <input type="number" id="timeoutSeconds" class="form-control" value="5" step="0.1">
+    </div>
+    <div class="mb-3">
+      <label for="timeoutRetries" class="form-label">Timeout Retries</label>
+      <input type="number" id="timeoutRetries" class="form-control" value="5">
+    </div>
     
     <!-- Compress, Retries, and Burst Count Controls -->
     <div class="mb-3">
@@ -529,8 +538,9 @@
       let infoStr = "";
       if (seq === 1) {
         let totalStr = totalPackets.toString(16).padStart(4, '0');
+        // Use "0001" for header packet as required by the new protocol.
         infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' +
-                  fileId + ':' + seqStr + burstToStr + '/' + totalStr + ':';
+                  fileId + ':' + "0001" + burstToStr + '/' + totalStr + ':';
       } else {
         infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' +
                   fileId + ':' + seqStr + burstToStr + ':';
@@ -671,68 +681,12 @@
           }
           consecutiveSuccessCount = 0;
         }
-      }
     
-      sendBurstPackets();
+        sendBurstPackets();
+      }
     }
     
     // --- Updated processAck to also handle duplicate single ACKs ---
-    function processAck(ackContent) {
-      // MODIFICATION: Change header ACK from "02" to "01" now with 4 hex digits: "0001"
-      if (ackContent === "0001") {
-        if (!headerAckReceived) {
-          headerAckReceived = true;
-          currentPacketIndex = 1;
-          console.log("Processed header ACK: 0001; setting currentPacketIndex to 1");
-          if (!burstInProgress) {
-            sendBurstPackets();
-          }
-        } else {
-          // If a duplicate header ACK is received, resend the next set.
-          console.log("Duplicate header ACK received; resending next set of packets.");
-          sendBurstPackets();
-        }
-        return;
-      }
-      
-      // Check for range ACK format.
-      if (ackContent.indexOf('-') !== -1 || ackContent.indexOf(',') !== -1) {
-        processRangeAck(ackContent);
-        return;
-      }
-      
-      // For single ACKs, check for duplicate.
-      if (ackContent === lastRangeAck) {
-        duplicateAckCount++;
-        console.log("Received duplicate ACK (" + duplicateAckCount + "):", ackContent);
-        // Resend next set of packets.
-        sendBurstPackets();
-        if (duplicateAckCount >= 3) {
-          console.log("Three duplicate ACKs received; resending missing packets:", missingPackets);
-          missingPackets.forEach(seq => { 
-            sendPacket(seq); 
-            totalRetries++; 
-          });
-          duplicateAckCount = 0;
-        }
-        return;
-      } else {
-        duplicateAckCount = 0;
-        lastRangeAck = ackContent;
-      }
-      
-      let ackNum = parseInt(ackContent, 16);
-      if (!isNaN(ackNum) && ackNum > currentPacketIndex) {
-        currentPacketIndex = ackNum;
-        console.log("Sender: Cumulative ACK updated currentPacketIndex to", currentPacketIndex);
-        updateSenderProgressUI();
-        if (!burstInProgress && currentPacketIndex < totalPackets) {
-          sendBurstPackets();
-        }
-      }
-    }
-    
-    // --- Duplicate processAck definition updated as well ---
     function processAck(ackContent) {
       if (ackContent === "0001") {
         if (!headerAckReceived) {
@@ -795,247 +749,28 @@
     }
     
     /***********************
-     * Document Ready & Connection Setup
+     * New FIN-ACK Functions (Sender & Receiver)
      ***********************/
-    document.addEventListener("DOMContentLoaded", function() {
-      const autoCheckbox = document.getElementById('autoBurstCheckbox');
-      const burstSlider = document.getElementById('burstSlider');
-      burstSlider.disabled = autoCheckbox.checked;
-      autoCheckbox.addEventListener('change', function() {
-        burstSlider.disabled = this.checked;
-      });
-    
-      updateReceivedFilesUI();
-      updateSentFilesUI();
+    // Sender: Build and send final FIN-ACK packet
+    function sendFinalFinAck() {
+      const finalInfo = padCallsign(sender) + '>' + padCallsign(receiver) + ':' + fileId + ':' + "ACK:FIN-ACK";
+      const encoder = new TextEncoder();
+      const infoBytes = encoder.encode(finalInfo);
+      const ax25Header = buildAX25Header(sender, receiver);
+      const packetBytes = new Uint8Array(ax25Header.length + infoBytes.length);
+      packetBytes.set(ax25Header, 0);
+      packetBytes.set(infoBytes, ax25Header.length);
+      const finalFrame = buildKissFrame(packetBytes);
+      console.log("Sender: Sending FIN-ACK.");
       if (document.getElementById('connectionType').value === 'websockets') {
-        initializeWebSocket();
+        if (socket) socket.emit('raw_kiss_frame', finalFrame);
+      } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+        serialWriter.write(finalFrame).catch(err => console.error("Error sending FIN-ACK:", err));
       }
-      document.getElementById('connectionType').addEventListener('change', async function(e) {
-        const connectionType = e.target.value;
-        if (connectionType === 'serial') {
-          document.getElementById('serialSettings').style.display = 'block';
-          if (socket) {
-            socket.disconnect();
-            socket = null;
-            console.log("Websocket closed (serial selected).");
-          }
-          updateConnectionIndicator();
-        } else {
-          document.getElementById('serialSettings').style.display = 'none';
-          if (serialPort) {
-            try { await serialPort.close(); console.log("Serial port closed."); }
-            catch (err) { console.error("Error closing serial port:", err); }
-            serialPort = null;
-            serialWriter = null;
-            serialConnected = false;
-          }
-          if (!socket) initializeWebSocket();
-          updateConnectionIndicator();
-        }
-      });
-      document.getElementById('serialConnectBtn').addEventListener('click', async () => {
-        if ("serial" in navigator) {
-          try {
-            serialPort = await navigator.serial.requestPort();
-            const baudRate = parseInt(document.getElementById('baudRate').value, 10);
-            await serialPort.open({ baudRate: baudRate });
-            serialConnected = true;
-            serialWriter = serialPort.writable.getWriter();
-            readSerial();
-            updateStatus("Serial port connected at " + baudRate);
-            updateConnectionIndicator();
-            document.getElementById('serialConnectBtn').style.display = 'none';
-            document.getElementById('serialDisconnectBtn').style.display = 'inline-block';
-          } catch (error) {
-            console.error("Error opening serial port:", error);
-            alert("Failed to open serial port: " + error);
-            serialConnected = false;
-            updateConnectionIndicator();
-          }
-        } else {
-          alert("Web Serial API not supported in this browser.");
-          serialConnected = false;
-          updateConnectionIndicator();
-        }
-      });
-      document.getElementById('serialDisconnectBtn').addEventListener('click', async () => {
-        if (serialPort) {
-          try { await serialPort.close(); updateStatus("Serial port disconnected."); }
-          catch (err) { console.error("Error closing serial port:", err); }
-          serialPort = null;
-          serialWriter = null;
-          serialConnected = false;
-          updateConnectionIndicator();
-          document.getElementById('serialConnectBtn').style.display = 'inline-block';
-          document.getElementById('serialDisconnectBtn').style.display = 'none';
-        }
-      });
-      document.getElementById('sendFileBtn').addEventListener('click', () => {
-        // Reset dynamic burst parameters for a new file transfer.
-        currentDynamicBurstIndex = 2;
-        currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-        consecutiveSuccessCount = 0;
-    
-        if (fileTransferInProgress) {
-          alert("A file transfer is already in progress.");
-          return;
-        }
-        document.getElementById('sendFileBtn').disabled = true;
-        sender = document.getElementById('senderCallsign').value.trim();
-        receiver = document.getElementById('receiverCallsign').value.trim();
-        const fileInput = document.getElementById('fileInput');
-        if (!sender || !receiver || !fileInput.files.length) {
-          alert("Please enter your callsign, receiver callsign, and select a file.");
-          document.getElementById('sendFileBtn').disabled = false;
-          return;
-        }
-        const compress = document.getElementById('compressCheckbox').checked;
-        if (document.getElementById('autoBurstCheckbox').checked) {
-          burstSize = 0;
-          currentDynamicBurstIndex = 2;
-          currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-        } else {
-          let sliderIndex = parseInt(document.getElementById('burstSlider').value, 10);
-          burstSize = dynamicBurstSizes[sliderIndex];
-        }
-        const file = fileInput.files[0];
-        fileId = generateFileId();
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          const arrayBuffer = e.target.result;
-          const fileData = new Uint8Array(arrayBuffer);
-          let finalData;
-          try {
-            finalData = compress ? pako.deflate(fileData, { level: 9 }) : fileData;
-          } catch (err) {
-            updateStatus("Compression error: " + err);
-            document.getElementById('sendFileBtn').disabled = false;
-            return;
-          }
-          const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
-          const fileDataChunksCount = Math.ceil(finalData.length / CHUNK_SIZE);
-          const totalPacketsExpected = fileDataChunksCount + 1;
-          const headerStr = file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (compress ? "1" : "0") + "|" + totalPacketsExpected;
-          const headerPayload = new TextEncoder().encode(headerStr);
-          fileDataChunks = [];
-          fileDataChunks.push(headerPayload);
-          for (let i = 0; i < fileDataChunksCount; i++) {
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, finalData.length);
-            fileDataChunks.push(finalData.slice(start, end));
-          }
-          totalPackets = fileDataChunks.length;
-          currentPacketIndex = 0;
-          currentRetries = 0;
-          totalRetries = 0;
-          fileTransferInProgress = true;
-          headerAckReceived = false;
-          burstInProgress = false;
-          missingPackets = [];
-          highestPacketSentSoFar = 0;
-          
-          sentFileStats = {
-            fileName: file.name,
-            receiver: receiver,
-            originalSize: fileData.length,
-            compressedSize: finalData.length,
-            startTime: Date.now(),
-            totalRetries: 0,
-            bytesSent: 0,
-            totalPackets: totalPackets,
-            fileId: fileId
-          };
-          updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes.
-File ID: ${fileId}`);
-          updateSenderProgressUI();
-          console.log("Sending header packet (seq 1)");
-          sendPacket(1);
-        };
-        reader.onerror = function(e) {
-          updateStatus("Error reading file: " + e);
-          document.getElementById('sendFileBtn').disabled = false;
-        };
-        reader.readAsArrayBuffer(file);
-      });
-      document.getElementById('burstSlider').addEventListener('input', function() {
-        let burstValue = dynamicBurstSizes[parseInt(this.value, 10)];
-        document.getElementById('burstValue').textContent = burstValue;
-      });
-      document.getElementById('autoBurstCheckbox').addEventListener('change', function() {
-        document.getElementById('burstSlider').disabled = this.checked;
-      });
-      fetch('/api/settings')
-        .then(response => response.json())
-        .then(settings => {
-          document.getElementById('senderCallsign').value = settings.my_callsign;
-        })
-        .catch(error => { console.error("Error fetching settings:", error); });
-    
-      // Set up a timer to update both sender and receiver progress UIs every second.
-      setInterval(() => {
-        updateSenderProgressUI();
-        updateReceiverProgressUI();
-      }, 1000);
-    });
-    
-    function updateStatus(msg) {
-      document.getElementById('status').innerText = msg;
-      console.log(msg);
-    }
-    window.downloadReceivedFile = function(index) {
-      const file = persistentReceivedFiles[index];
-      if (!file) return;
-      const a = document.createElement('a');
-      a.href = file.dataUrl;
-      a.download = file.fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    };
-    
-    window.clearSentFile = function(index) {
-      persistentSentFiles.splice(index, 1);
-      saveSentFilesToLocalStorage(persistentSentFiles);
-      updateSentFilesUI();
-    };
-    window.deleteReceivedFile = function(index) {
-      // Remove the received file from your persistent array
-      persistentReceivedFiles.splice(index, 1);
-      // Save the updated array to local storage
-      saveReceivedFilesToLocalStorage(persistentReceivedFiles);
-      // Refresh the UI to reflect the change
-      updateReceivedFilesUI();
-    };
-    window.reAckTransfer = function(key) {
-      let transfer = activeTransfers[key];
-      if (!transfer) return;
-      const senderStr = key.split("_")[0];
-      const fileId = key.split("_")[1];
-      console.log("[Re-ACK] Manually resending cumulative ACK for:", key);
-      sendCumulativeAck(transfer, senderStr, fileId, true);
-    };
-    function cancelReceiverTransfer(key) {
-      let transfer = activeTransfers[key];
-      if (!transfer) return;
-      
-      // Clear any pending timers associated with this transfer.
-      if (transfer.ackTimer) {
-        clearTimeout(transfer.ackTimer);
-        transfer.ackTimer = null;
-      }
-      
-      updateStatus("Receiver transfer " + key + " canceled.");
-      
-      // Remove the transfer from active transfers.
-      delete activeTransfers[key];
-      
-      // Update the receiver progress UI to reflect the cancellation.
-      updateReceiverProgressUI();
+      // Optionally: add a timer to re-send FIN-ACK if necessary.
     }
     
-    /***********************
-     * processRawPacket Function (Receiver Side)
-     ***********************/
+    // Receiver: Check for FIN-ACK in incoming packets
     function processRawPacket(packet) {
       console.log("Processing raw packet:", packet);
       let packetBytes;
@@ -1063,7 +798,14 @@ File ID: ${fileId}`);
       }
       const infoField = ax25Frame.slice(16);
       let infoText = new TextDecoder().decode(infoField);
-    
+      
+      // NEW: Check for final FIN-ACK from sender.
+      if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
+        console.log("Receiver: Final FIN-ACK received from sender.");
+        // Optionally clear any timers or mark transfer as complete.
+        return;
+      }
+      
       // Check for an ACK from the remote sender
       if (infoText.indexOf(":ACK:") !== -1) {
         let ackValue = processAckFrame(infoText);
@@ -1134,13 +876,13 @@ File ID: ${fileId}`);
         let headerPayloadText = new TextDecoder().decode(payloadChunk);
         let parts = headerPayloadText.split("|");
         activeTransfers[transferKeyFinal].header = {
-          fileName: parts[0],
-          originalSize: parseInt(parts[1], 10),
-          compressedSize: parseInt(parts[2], 10),
-          md5: parts[3],
-          fileId: parts[4],
-          compression: (parts[5] === "1"),
-          expectedTotal: parts.length >= 7 ? parseInt(parts[6], 10) : parseInt(infoText.substring(32, 36), 16)
+          fileName: parts[2],
+          originalSize: parseInt(parts[3], 10),
+          compressedSize: parseInt(parts[4], 10),
+          md5: parts[5],
+          fileId: parts[6],
+          compression: (parts[7] === "1"),
+          expectedTotal: parts.length >= 9 ? parseInt(parts[8], 10) : parseInt(infoText.substring(32, 36), 16)
         };
         activeTransfers[transferKeyFinal].totalChunks = activeTransfers[transferKeyFinal].header.expectedTotal;
         console.log("Received header from sender", senderStr, "for file ID", fileId, activeTransfers[transferKeyFinal].header);
@@ -1167,7 +909,7 @@ File ID: ${fileId}`);
       updateReceiverProgressUI();
     
       if (seq === 1) {
-        // Change ACK for metadata packet from "02" to "01" now becomes "0001"
+        // Change ACK for metadata packet to "0001"
         sendAckFromReceiver(senderStr, fileId, "0001");
         return;
       }
@@ -1373,61 +1115,251 @@ File ID: ${fileId}`);
     }
     
     /***********************
-     * Connection Setup Functions
+     * Document Ready & Connection Setup
      ***********************/
-    function updateConnectionIndicator() {
-      const dot = document.getElementById('connectionStatusDot');
-      if (document.getElementById('connectionType').value === 'websockets')
-        dot.style.backgroundColor = (socket && socket.connected) ? 'green' : 'red';
-      else
-        dot.style.backgroundColor = serialConnected ? 'green' : 'red';
-      updateSendButtonStatus();
-    }
+    document.addEventListener("DOMContentLoaded", function() {
+      const autoCheckbox = document.getElementById('autoBurstCheckbox');
+      const burstSlider = document.getElementById('burstSlider');
+      burstSlider.disabled = autoCheckbox.checked;
+      autoCheckbox.addEventListener('change', function() {
+        burstSlider.disabled = this.checked;
+      });
     
-    function updateSendButtonStatus() {
-      const sendBtn = document.getElementById('sendFileBtn');
-      sendBtn.disabled = (document.getElementById('connectionType').value === 'websockets')
-                         ? !(socket && socket.connected) : !serialConnected;
-    }
-    
-    function initializeWebSocket() {
-      if (socket) return;
-      socket = io('/');
-      socket.onAny((event, ...args) => { if (event === "raw_kiss_frame") console.log('Socket event:', event, args); });
-      socket.on('connect', () => { console.log("Websocket connected, id:", socket.id); updateConnectionIndicator(); });
-      socket.on('disconnect', () => { console.log("Websocket disconnected."); updateConnectionIndicator(); });
-      socket.on('connect_error', (err) => { console.error("Socket connection error:", err); updateConnectionIndicator(); });
-      socket.on('raw_kiss_frame', (packet) => { console.log("Received raw_kiss_frame event:", packet); processRawPacket(packet); });
-      updateConnectionIndicator();
-    }
-    
-    async function readSerial() {
-      while (serialPort && serialPort.readable) {
-        const reader = serialPort.readable.getReader();
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            if (value) {
-              kissBuffer = concatUint8Arrays(kissBuffer, value);
-              let startIndex = kissBuffer.indexOf(0xC0);
-              while (startIndex !== -1) {
-                let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
-                if (endIndex === -1) break;
-                const frame = kissBuffer.slice(startIndex, endIndex + 1);
-                processRawPacket(frame);
-                kissBuffer = kissBuffer.slice(endIndex + 1);
-                startIndex = kissBuffer.indexOf(0xC0);
-              }
-            }
-          }
-        } catch (error) {
-          console.error("Error reading serial port:", error);
-        } finally {
-          reader.releaseLock();
-        }
+      updateReceivedFilesUI();
+      updateSentFilesUI();
+      if (document.getElementById('connectionType').value === 'websockets') {
+        initializeWebSocket();
       }
+      document.getElementById('connectionType').addEventListener('change', async function(e) {
+        const connectionType = e.target.value;
+        if (connectionType === 'serial') {
+          document.getElementById('serialSettings').style.display = 'block';
+          if (socket) {
+            socket.disconnect();
+            socket = null;
+            console.log("Websocket closed (serial selected).");
+          }
+          updateConnectionIndicator();
+        } else {
+          document.getElementById('serialSettings').style.display = 'none';
+          if (serialPort) {
+            try { await serialPort.close(); console.log("Serial port closed."); }
+            catch (err) { console.error("Error closing serial port:", err); }
+            serialPort = null;
+            serialWriter = null;
+            serialConnected = false;
+          }
+          if (!socket) initializeWebSocket();
+          updateConnectionIndicator();
+        }
+      });
+      document.getElementById('serialConnectBtn').addEventListener('click', async () => {
+        if ("serial" in navigator) {
+          try {
+            serialPort = await navigator.serial.requestPort();
+            const baudRate = parseInt(document.getElementById('baudRate').value, 10);
+            await serialPort.open({ baudRate: baudRate });
+            serialConnected = true;
+            serialWriter = serialPort.writable.getWriter();
+            readSerial();
+            updateStatus("Serial port connected at " + baudRate);
+            updateConnectionIndicator();
+            document.getElementById('serialConnectBtn').style.display = 'none';
+            document.getElementById('serialDisconnectBtn').style.display = 'inline-block';
+          } catch (error) {
+            console.error("Error opening serial port:", error);
+            alert("Failed to open serial port: " + error);
+            serialConnected = false;
+            updateConnectionIndicator();
+          }
+        } else {
+          alert("Web Serial API not supported in this browser.");
+          serialConnected = false;
+          updateConnectionIndicator();
+        }
+      });
+      document.getElementById('serialDisconnectBtn').addEventListener('click', async () => {
+        if (serialPort) {
+          try { await serialPort.close(); updateStatus("Serial port disconnected."); }
+          catch (err) { console.error("Error closing serial port:", err); }
+          serialPort = null;
+          serialWriter = null;
+          serialConnected = false;
+          updateConnectionIndicator();
+          document.getElementById('serialConnectBtn').style.display = 'inline-block';
+          document.getElementById('serialDisconnectBtn').style.display = 'none';
+        }
+      });
+      document.getElementById('sendFileBtn').addEventListener('click', () => {
+        // Reset dynamic burst parameters for a new file transfer.
+        currentDynamicBurstIndex = 2;
+        currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
+        consecutiveSuccessCount = 0;
+    
+        if (fileTransferInProgress) {
+          alert("A file transfer is already in progress.");
+          return;
+        }
+        document.getElementById('sendFileBtn').disabled = true;
+        sender = document.getElementById('senderCallsign').value.trim();
+        receiver = document.getElementById('receiverCallsign').value.trim();
+        const fileInput = document.getElementById('fileInput');
+        if (!sender || !receiver || !fileInput.files.length) {
+          alert("Please enter your callsign, receiver callsign, and select a file.");
+          document.getElementById('sendFileBtn').disabled = false;
+          return;
+        }
+        const compress = document.getElementById('compressCheckbox').checked;
+        if (document.getElementById('autoBurstCheckbox').checked) {
+          burstSize = 0;
+          currentDynamicBurstIndex = 2;
+          currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
+        } else {
+          let sliderIndex = parseInt(document.getElementById('burstSlider').value, 10);
+          burstSize = dynamicBurstSizes[sliderIndex];
+        }
+        const file = fileInput.files[0];
+        fileId = generateFileId();
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const arrayBuffer = e.target.result;
+          const fileData = new Uint8Array(arrayBuffer);
+          let finalData;
+          try {
+            finalData = compress ? pako.deflate(fileData, { level: 9 }) : fileData;
+          } catch (err) {
+            updateStatus("Compression error: " + err);
+            document.getElementById('sendFileBtn').disabled = false;
+            return;
+          }
+          const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
+          const fileDataChunksCount = Math.ceil(finalData.length / CHUNK_SIZE);
+          const totalPacketsExpected = fileDataChunksCount + 1;
+          // NEW: Read timeout values from the UI (or default to 5 and 5)
+          const timeoutSeconds = parseFloat(document.getElementById('timeoutSeconds')?.value) || 5.0;
+          const timeoutRetries = parseInt(document.getElementById('timeoutRetries')?.value, 10) || 5;
+          const headerStr = timeoutSeconds + "|" + timeoutRetries + "|" + file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (compress ? "1" : "0") + "|" + totalPacketsExpected;
+          const headerPayload = new TextEncoder().encode(headerStr);
+          fileDataChunks = [];
+          fileDataChunks.push(headerPayload);
+          for (let i = 0; i < fileDataChunksCount; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, finalData.length);
+            fileDataChunks.push(finalData.slice(start, end));
+          }
+          totalPackets = fileDataChunks.length;
+          currentPacketIndex = 0;
+          currentRetries = 0;
+          totalRetries = 0;
+          fileTransferInProgress = true;
+          headerAckReceived = false;
+          burstInProgress = false;
+          missingPackets = [];
+          highestPacketSentSoFar = 0;
+          
+          sentFileStats = {
+            fileName: file.name,
+            receiver: receiver,
+            originalSize: fileData.length,
+            compressedSize: finalData.length,
+            startTime: Date.now(),
+            totalRetries: 0,
+            bytesSent: 0,
+            totalPackets: totalPackets,
+            fileId: fileId
+          };
+          updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes.
+File ID: ${fileId}`);
+          updateSenderProgressUI();
+          console.log("Sending header packet (seq 1)");
+          sendPacket(1);
+        };
+        reader.onerror = function(e) {
+          updateStatus("Error reading file: " + e);
+          document.getElementById('sendFileBtn').disabled = false;
+        };
+        reader.readAsArrayBuffer(file);
+      });
+      document.getElementById('burstSlider').addEventListener('input', function() {
+        let burstValue = dynamicBurstSizes[parseInt(this.value, 10)];
+        document.getElementById('burstValue').textContent = burstValue;
+      });
+      document.getElementById('autoBurstCheckbox').addEventListener('change', function() {
+        document.getElementById('burstSlider').disabled = this.checked;
+      });
+      fetch('/api/settings')
+        .then(response => response.json())
+        .then(settings => {
+          document.getElementById('senderCallsign').value = settings.my_callsign;
+        })
+        .catch(error => { console.error("Error fetching settings:", error); });
+    
+      // Set up a timer to update both sender and receiver progress UIs every second.
+      setInterval(() => {
+        updateSenderProgressUI();
+        updateReceiverProgressUI();
+      }, 1000);
+    });
+    
+    function updateStatus(msg) {
+      document.getElementById('status').innerText = msg;
+      console.log(msg);
     }
+    window.downloadReceivedFile = function(index) {
+      const file = persistentReceivedFiles[index];
+      if (!file) return;
+      const a = document.createElement('a');
+      a.href = file.dataUrl;
+      a.download = file.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+    
+    window.clearSentFile = function(index) {
+      persistentSentFiles.splice(index, 1);
+      saveSentFilesToLocalStorage(persistentSentFiles);
+      updateSentFilesUI();
+    };
+    window.deleteReceivedFile = function(index) {
+      // Remove the received file from your persistent array
+      persistentReceivedFiles.splice(index, 1);
+      // Save the updated array to local storage
+      saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+      // Refresh the UI to reflect the change
+      updateReceivedFilesUI();
+    };
+    window.reAckTransfer = function(key) {
+      let transfer = activeTransfers[key];
+      if (!transfer) return;
+      const senderStr = key.split("_")[0];
+      const fileId = key.split("_")[1];
+      console.log("[Re-ACK] Manually resending cumulative ACK for:", key);
+      sendCumulativeAck(transfer, senderStr, fileId, true);
+    };
+    function cancelReceiverTransfer(key) {
+      let transfer = activeTransfers[key];
+      if (!transfer) return;
+      
+      // Clear any pending timers associated with this transfer.
+      if (transfer.ackTimer) {
+        clearTimeout(transfer.ackTimer);
+        transfer.ackTimer = null;
+      }
+      
+      updateStatus("Receiver transfer " + key + " canceled.");
+      
+      // Remove the transfer from active transfers.
+      delete activeTransfers[key];
+      
+      // Update the receiver progress UI to reflect the cancellation.
+      updateReceiverProgressUI();
+    }
+    
+    /***********************
+     * processRawPacket Function (Receiver Side)
+     ***********************/
+    // (Already updated above to check for FIN-ACK)
     
     /***********************
      * Sender UI: Manual Resend and Cancel Functions
@@ -1485,6 +1417,8 @@ File ID: ${fileId}`);
         }
         updateReceiverProgressUI();
         document.getElementById('sendFileBtn').disabled = false;
+        // NEW: Send final FIN-ACK before ending transfer.
+        sendFinalFinAck();
         return;
       }
       if (burstInProgress) return;
@@ -1575,6 +1509,63 @@ File ID: ${fileId}`);
     
     // Expose processRawPacket globally so that socket events can call it.
     window.processRawPacket = processRawPacket;
+    
+    /***********************
+     * Connection Setup Functions
+     ***********************/
+    function updateConnectionIndicator() {
+      const dot = document.getElementById('connectionStatusDot');
+      if (document.getElementById('connectionType').value === 'websockets')
+        dot.style.backgroundColor = (socket && socket.connected) ? 'green' : 'red';
+      else
+        dot.style.backgroundColor = serialConnected ? 'green' : 'red';
+      updateSendButtonStatus();
+    }
+    
+    function updateSendButtonStatus() {
+      const sendBtn = document.getElementById('sendFileBtn');
+      sendBtn.disabled = (document.getElementById('connectionType').value === 'websockets')
+                         ? !(socket && socket.connected) : !serialConnected;
+    }
+    
+    function initializeWebSocket() {
+      if (socket) return;
+      socket = io('/');
+      socket.onAny((event, ...args) => { if (event === "raw_kiss_frame") console.log('Socket event:', event, args); });
+      socket.on('connect', () => { console.log("Websocket connected, id:", socket.id); updateConnectionIndicator(); });
+      socket.on('disconnect', () => { console.log("Websocket disconnected."); updateConnectionIndicator(); });
+      socket.on('connect_error', (err) => { console.error("Socket connection error:", err); updateConnectionIndicator(); });
+      socket.on('raw_kiss_frame', (packet) => { console.log("Received raw_kiss_frame event:", packet); processRawPacket(packet); });
+      updateConnectionIndicator();
+    }
+    
+    async function readSerial() {
+      while (serialPort && serialPort.readable) {
+        const reader = serialPort.readable.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) {
+              kissBuffer = concatUint8Arrays(kissBuffer, value);
+              let startIndex = kissBuffer.indexOf(0xC0);
+              while (startIndex !== -1) {
+                let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
+                if (endIndex === -1) break;
+                const frame = kissBuffer.slice(startIndex, endIndex + 1);
+                processRawPacket(frame);
+                kissBuffer = kissBuffer.slice(endIndex + 1);
+                startIndex = kissBuffer.indexOf(0xC0);
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error reading serial port:", error);
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    }
   </script>
 </body>
 </html>
