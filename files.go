@@ -1,4 +1,4 @@
-// kiss_transfer.go
+// files.go
 package main
 
 import (
@@ -434,7 +434,7 @@ func (fr *FrameReader) Run() {
 		data, err := fr.conn.RecvData(100 * time.Millisecond)
 		if err != nil {
 			// If EOF is returned, simply continue.
-			if err == io.EOF {
+			if err == io.EOF || strings.Contains(err.Error(), "use of closed network connection") {
 				continue
 			}
 			log.Printf("Receive error: %v", err)
@@ -1198,4 +1198,3 @@ func main() {
 		receiverMain(args)
 	}
 }
-
