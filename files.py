@@ -447,6 +447,9 @@ def sender_main(args):
 
     successful_burst_count = 0  # count of consecutive fully-acknowledged bursts at current window size
 
+    # Initialize per-packet timeout variable with default 1.5 seconds.
+    per_packet_timeout = 1.5
+
     # Open the connection.
     if args.connection == "tcp":
         conn = TCPKISSConnection(args.host, args.port, is_server=False)
@@ -487,11 +490,11 @@ def sender_main(args):
             return len(chunks[seq-1])
     
     # wait_for_ack waits for an ACK, using a dynamic timeout.
-    # Added parameter is_header (default False). When True, on each timeout the header packet is re‑sent.
+    # When is_header is True, on each timeout the header packet is re‑sent.
     def wait_for_ack(num_packets, is_header=False):
-        nonlocal total_retries, burst_retries
+        nonlocal total_retries, burst_retries, per_packet_timeout
         retries = 0
-        current_timeout = num_packets * 1.5 + args.timeout_seconds
+        current_timeout = num_packets * per_packet_timeout + args.timeout_seconds
         while retries < args.timeout_retries:
             if is_header and retries > 0:
                 logging.info(f"Resending header packet (retry {retries}/{args.timeout_retries}).")
@@ -503,7 +506,7 @@ def sender_main(args):
                 total_retries += 1
                 burst_retries += 1
                 logging.info(f"Timeout waiting for ACK (retry {retries}/{args.timeout_retries}, timeout was {current_timeout:.2f}s).")
-                current_timeout = args.timeout_seconds * (1.5 ** retries)
+                current_timeout = args.timeout_seconds * (per_packet_timeout ** retries)
                 continue
             parsed = parse_packet(pkt)
             if parsed and parsed.get("type") == "ack":
@@ -513,14 +516,16 @@ def sender_main(args):
     flush_queue()
     # Send header packet (seq 1) and wait for ACK "0001"
     logging.info("Sending header packet (seq=1) …")
+    header_start = time.time()
     header_len = send_packet(1)
     total_bytes_sent += header_len  # header not counted
     ack_val = wait_for_ack(1, is_header=True)
-    if ack_val is None:
-        logging.info("No ACK received for header after maximum retries. Giving up on transfer.")
-        reader.stop()
-        conn.close()
-        sys.exit(1)
+    header_ack_duration = time.time() - header_start
+    if header_ack_duration > 0:
+        per_packet_timeout = header_ack_duration / 2  # 1 sent packet + 1 ACK = 2
+        logging.info(f"Updated per-packet timeout to {per_packet_timeout:.2f} seconds based on header ACK timing.")
+    else:
+        per_packet_timeout = 1.5
     logging.info(f"Received ACK: {ack_val}")
     try:
         ack_int = int(ack_val, 16)
@@ -558,6 +563,12 @@ def sender_main(args):
         burst_count = end_seq - start_seq + 1
         expected_ack = end_seq + 1
         ack_val = wait_for_ack(burst_count)
+        burst_duration = time.time() - burst_start
+        # Update per-packet timeout dynamically based ACK.
+        if burst_count > 0:
+            new_timeout = burst_duration / (burst_count + 1)
+            per_packet_timeout = new_timeout
+            logging.info(f"Updated per-packet timeout to {per_packet_timeout:.2f} seconds based on ACK.")
         if ack_val is None:
             logging.info("No ACK received after maximum retries. Giving up on transfer.")
             break
@@ -626,10 +637,10 @@ def sender_main(args):
     final_confirmation_pkt = build_ax25_header(args.my_callsign, args.receiver_callsign) + final_confirmation_info.encode('utf-8')
     final_frame = build_kiss_frame(final_confirmation_pkt)
     conn.send_frame(final_frame)
-    logging.info("Sent final confirmation FIN-ACK immediately after receiving the final cumulative ACK. Transfer fully completed.")
+    logging.info("Sent FIN-ACK after final cumulative ACK. Transfer fully completed.")
     # Wait for a period of 1.5 seconds + timeout-seconds to allow for retransmission.
     final_wait_period = 1.5 + args.timeout_seconds
-    logging.info(f"Listening for re-transmitted cumulative ACK for {final_wait_period:.2f} seconds...")
+    logging.info(f"Listening for re-transmitted ACK for {final_wait_period:.2f} seconds...")
     end_time = time.time() + final_wait_period
     while time.time() < end_time:
         try:
@@ -675,7 +686,7 @@ def compute_cumulative_ack(transfer):
 
 def receiver_main(args):
     if args.connection == "tcp":
-        conn = TCPKISSConnection(args.host, args.port, is_server=True)
+        conn = TCPKISSConnection(args.host, args.port, is_server=False)
     else:
         conn = SerialKISSConnection(args.serial_port, args.baud)
     frame_q = Queue()
