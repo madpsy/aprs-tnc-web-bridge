@@ -427,9 +427,11 @@ def sender_main(args):
     total_retries = 0
     burst_retries = 0
 
-    # Allowed window sizes: 1, 2, 4, 8, 10; starting at 4.
+    # Allowed window sizes: 1, 2, 4, 6, 8, 10; starting at 4.
     allowed_windows = [1, 2, 4, 6, 8, 10]
-    if args.window_size != "auto":
+    # If a fixed window size is provided (not "auto"), use that value and disable dynamic adjustments.
+    static_window = (args.window_size != "auto")
+    if static_window:
         try:
             win_val = int(args.window_size)
             if win_val in allowed_windows:
@@ -441,7 +443,8 @@ def sender_main(args):
             logging.info("Invalid window size argument. Defaulting to 4.")
             current_window_index = allowed_windows.index(4)
     else:
-        current_window_index = allowed_windows.index(4)  # default if auto
+        current_window_index = allowed_windows.index(4)  # default starting window if auto
+
     successful_burst_count = 0  # count of consecutive fully-acknowledged bursts at current window size
 
     # Open the connection.
@@ -566,24 +569,31 @@ def sender_main(args):
                 ack_int = int(ack_val, 16) + 1
         except Exception:
             ack_int = state["current_packet"] + 1
-        # Adjust sliding window:
+
+        # Adjust sliding window only if dynamic (i.e. auto window size)
         if ack_int == expected_ack:
-            successful_burst_count += 1
-            logging.info("All packets in burst acknowledged.")
-            if successful_burst_count >= 2 and current_window_index < len(allowed_windows) - 1:
-                current_window_index += 1
-                successful_burst_count = 0
-                logging.info(f"Increasing window size to {allowed_windows[current_window_index]}")
+            if not static_window:
+                successful_burst_count += 1
+                logging.info("All packets in burst acknowledged.")
+                if successful_burst_count >= 2 and current_window_index < len(allowed_windows) - 1:
+                    current_window_index += 1
+                    successful_burst_count = 0
+                    logging.info(f"Increasing window size to {allowed_windows[current_window_index]}")
+                else:
+                    logging.info(f"Window remains at {allowed_windows[current_window_index]}")
             else:
-                logging.info(f"Window remains at {allowed_windows[current_window_index]}")
+                logging.info("All packets in burst acknowledged. (Static window in use)")
         else:
             logging.info(f"Not all packets acknowledged. Expected ACK: {expected_ack}, received ACK: {ack_int}")
-            if current_window_index > 0:
-                current_window_index -= 1
-                successful_burst_count = 0
-                logging.info(f"Reducing window size to {allowed_windows[current_window_index]}")
+            if not static_window:
+                if current_window_index > 0:
+                    current_window_index -= 1
+                    successful_burst_count = 0
+                    logging.info(f"Reducing window size to {allowed_windows[current_window_index]}")
+                else:
+                    logging.info("Window size is at minimum (1).")
             else:
-                logging.info("Window size is at minimum (1).")
+                logging.info("Static window size in use; no adjustment made.")
         if ack_int <= state["current_packet"]:
             logging.info("Stale ACK received; waiting for next ACK …")
             continue
@@ -875,7 +885,7 @@ def main():
                         help="Your callsign")
     parser.add_argument('--receiver-callsign',
                         help="Receiver callsign (required if sender)")
-    parser.add_argument('--window-size', default="4",
+    parser.add_argument('--window-size', default="auto",
                         help="Window (burst) size as an integer, or 'auto'")
     parser.add_argument('--connection', choices=['tcp', 'serial'], default='tcp',
                         help="Connection type: tcp or serial")
