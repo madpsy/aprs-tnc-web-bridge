@@ -620,6 +620,28 @@ def sender_main(args):
     logging.info(f"Total bytes sent: {total_bytes_sent} bytes in {overall_elapsed:.2f}s ({overall_rate:.2f} bytes/s).")
     logging.info(f"Total retries: {total_retries}.")
     logging.info("=====================")
+
+    # --- NEW: Final handshake (sender sends FIN-ACK immediately after receiving final cumulative ACK) ---
+    final_confirmation_info = f"{args.my_callsign}>{args.receiver_callsign}:{file_id}:ACK:FIN-ACK"
+    final_confirmation_pkt = build_ax25_header(args.my_callsign, args.receiver_callsign) + final_confirmation_info.encode('utf-8')
+    final_frame = build_kiss_frame(final_confirmation_pkt)
+    conn.send_frame(final_frame)
+    logging.info("Sent final confirmation FIN-ACK immediately after receiving the final cumulative ACK. Transfer fully completed.")
+    # Wait for a period of 1.5 seconds + timeout-seconds to allow for retransmission.
+    final_wait_period = 1.5 + args.timeout_seconds
+    logging.info(f"Listening for re-transmitted cumulative ACK for {final_wait_period:.2f} seconds...")
+    end_time = time.time() + final_wait_period
+    while time.time() < end_time:
+        try:
+            ack_pkt = frame_q.get(timeout=0.5)
+        except Empty:
+            continue
+        parsed_ack = parse_packet(ack_pkt)
+        # If we detect a retransmitted cumulative ACK (e.g. it contains a hyphen like "0001-XXXX")
+        if parsed_ack and parsed_ack.get("type") == "ack" and "-" in parsed_ack.get("ack", ""):
+            logging.info("Re-received cumulative ACK from receiver, re-sending final confirmation FIN-ACK.")
+            conn.send_frame(final_frame)
+
     reader.stop()
     conn.close()
 
@@ -864,6 +886,30 @@ def receiver_main(args):
             with open(outname, 'wb') as f:
                 f.write(full_data)
             logging.info(f"Saved received file as {outname}")
+            
+            # --- NEW: Final handshake (receiver waits for sender's final confirmation FIN-ACK) ---
+            logging.info("Waiting for sender's final confirmation (FIN-ACK)...")
+            final_confirmation = None
+            retries = 0
+            while retries < transfer["timeout_retries"] and final_confirmation is None:
+                try:
+                    ack_pkt = frame_q.get(timeout=transfer["timeout_seconds"])
+                except Empty:
+                    retries += 1
+                    logging.info(f"Timeout waiting for final confirmation (FIN-ACK) (retry {retries}/{transfer['timeout_retries']}). Resending cumulative ACK.")
+                    ack_range = compute_cumulative_ack(transfer)
+                    send_ack(args.my_callsign, sender, file_id, ack_range)
+                    continue
+                parsed_ack = parse_packet(ack_pkt)
+                if parsed_ack and parsed_ack.get("type") == "ack" and "FIN-ACK" in parsed_ack.get("ack", ""):
+                    final_confirmation = parsed_ack.get("ack")
+                    logging.info("Received sender's final confirmation FIN-ACK.")
+                    break
+            if final_confirmation is None:
+                logging.info("Final confirmation FIN-ACK not received after maximum retries.")
+            else:
+                logging.info("Final handshake completed successfully.")
+            
             del transfers[file_id]
             # --- NEW: If the --one-file flag is set, exit receiver mode after one file ---
             if args.one_file:
