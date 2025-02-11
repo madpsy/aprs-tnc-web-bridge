@@ -492,26 +492,47 @@ def sender_main(args):
     # wait_for_ack waits for an ACK, using a dynamic timeout.
     # When is_header is True, on each timeout the header packet is re‑sent.
     def wait_for_ack(num_packets, is_header=False):
-        nonlocal total_retries, burst_retries, per_packet_timeout
-        retries = 0
-        current_timeout = num_packets * per_packet_timeout + args.timeout_seconds
-        while retries < args.timeout_retries:
-            if is_header and retries > 0:
-                logging.info(f"Resending header packet (retry {retries}/{args.timeout_retries}).")
-                send_packet(1)
-            try:
-                pkt = frame_q.get(timeout=current_timeout)
-            except Empty:
-                retries += 1
-                total_retries += 1
-                burst_retries += 1
-                logging.info(f"Timeout waiting for ACK (retry {retries}/{args.timeout_retries}, timeout was {current_timeout:.2f}s).")
-                current_timeout = args.timeout_seconds * (per_packet_timeout ** retries)
-                continue
-            parsed = parse_packet(pkt)
-            if parsed and parsed.get("type") == "ack":
-                return parsed["ack"]
-        return None
+       """
+       Waits for a valid ACK packet.
+       This version ignores non-parseable packets and uses an overall deadline rather than
+       counting each invalid packet as a timeout event.
+       """
+       nonlocal total_retries, burst_retries, per_packet_timeout
+       retries = 0
+       # Initial overall timeout is based on the expected burst plus a sender timeout
+       overall_timeout = num_packets * per_packet_timeout + args.timeout_seconds
+
+       while retries < args.timeout_retries:
+           deadline = time.time() + overall_timeout
+           # Loop until the deadline is reached
+           while time.time() < deadline:
+               try:
+                   # Poll with a small timeout so that we can check the deadline repeatedly
+                   pkt = frame_q.get(timeout=0.1)
+               except Empty:
+                   continue  # No packet arrived in this short interval; keep waiting
+
+               parsed = parse_packet(pkt)
+               if parsed is None:
+                   # Ignore non-parseable (invalid) packets and keep waiting
+                   logging.debug("Ignoring non-parseable packet while waiting for ACK.")
+                   continue
+
+               if parsed.get("type") == "ack":
+                   return parsed["ack"]
+
+           # If we reach here, the overall deadline has been exceeded without a valid ACK.
+           retries += 1
+           total_retries += 1
+           burst_retries += 1
+           if is_header:
+               logging.info(f"Resending header packet (retry {retries}/{args.timeout_retries}).")
+               send_packet(1)
+           logging.info(f"Timeout waiting for ACK (retry {retries}/{args.timeout_retries}).")
+           # Increase the overall timeout for the next retry (exponential back-off)
+           overall_timeout = args.timeout_seconds * (1.5 ** retries)
+       return None
+
 
     flush_queue()
     # Send header packet (seq 1) and wait for ACK "0001"
