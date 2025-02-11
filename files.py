@@ -969,7 +969,7 @@ def main():
                         help="Connection type: tcp or serial")
     parser.add_argument('--debug', action='store_true', help="Enable debug output")
     parser.add_argument('--host', default='127.0.0.1',
-                        help="TCP host (for sender: remote host; for receiver: bind address)")
+                        help="TCP host")
     parser.add_argument('--port', type=int, default=9001,
                         help="TCP port")
     parser.add_argument('--serial-port', help="Serial port (e.g. COM3 or /dev/ttyUSB0)")
