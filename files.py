@@ -4,7 +4,7 @@ KISS File Transfer CLI (sender/receiver)
 -----------------------------------------
 This script implements a simple KISS–framed file transfer system over TCP
 (or serial). It builds packets that contain an AX.25 header plus an “info”
-field (including file metadata) concatenated with a binary payload.
+field (including file metadata) concatenated with an binary payload.
 If compression is enabled the file is compressed (using zlib.compress, which
 produces a standard zlib deflate stream) and then split into chunks.
 """
@@ -120,24 +120,25 @@ def build_ax25_header(source: str, destination: str) -> bytes:
 #############################
 
 # Each payload chunk is CHUNK_SIZE bytes.
-CHUNK_SIZE = 209
+# Reduced by 4 bytes (from 209 to 205) to offset the increase in the info field length.
+CHUNK_SIZE = 205
 
 def build_packet(sender: str, receiver: str, seq: int, total_data_packets: int,
                  payload: bytes, file_id: str, burst_to: int) -> bytes:
     """
     Build a packet.
     For seq==1 (header) the info field is built as:
-      "SENDER>RECEIVER:FILEID:01{burst_to_hex}/{total_hex}:"
+      "SENDER>RECEIVER:FILEID:0001{burst_to_hex}/{total_hex}:"
     For data packets (seq>=2) it is:
       "SENDER>RECEIVER:FILEID:{seq_hex}{burst_to_hex}:"
     """
     s_str = pad_callsign(sender)
     r_str = pad_callsign(receiver)
     if seq == 1:
-        total_hex = format(total_data_packets, '02X')
-        info = f"{s_str}>{r_str}:{file_id}:01{format(burst_to, '02X')}/{total_hex}:"
+        total_hex = format(total_data_packets, '04X')
+        info = f"{s_str}>{r_str}:{file_id}:0001{format(burst_to, '04X')}/{total_hex}:"
     else:
-        info = f"{s_str}>{r_str}:{file_id}:{format(seq, '02X')}{format(burst_to, '02X')}:"
+        info = f"{s_str}>{r_str}:{file_id}:{format(seq, '04X')}{format(burst_to, '04X')}:"
     info_bytes = info.encode('utf-8')
     ax25 = build_ax25_header(sender, receiver)
     return ax25 + info_bytes + payload
@@ -151,7 +152,7 @@ def parse_packet(packet: bytes):
     
     For data frames, we know the info field has a fixed length:
       • For header packets (seq==1), the info field ends with the final colon.
-      • For data packets (seq>=2) it is fixed at 28 bytes.
+      • For data packets (seq>=2) it is fixed at 32 bytes.
     The remainder is the binary payload.
     
     Returns a dictionary with keys:
@@ -181,14 +182,15 @@ def parse_packet(packet: bytes):
             ack_val = parts[1].strip().strip(':')
             return {"type": "ack", "ack": ack_val, "raw_info": full_info}
     
-    if len(info_and_payload) < 28:
+    # Updated minimum length for info field (data packets now require 32 bytes)
+    if len(info_and_payload) < 32:
         return None
 
-    # Header packet: info field starts with bytes 23-25 equal to b'01'
-    if info_and_payload[23:25] == b'01':
+    # Header packet: info field starts with bytes 23-27 equal to b'0001'
+    if info_and_payload[23:27] == b'0001':
         try:
-            # Look for the terminating colon that ends the info field (starting at index 25).
-            end_idx = info_and_payload.index(b':', 25) + 1
+            # Look for the terminating colon that ends the info field (starting at index 27).
+            end_idx = info_and_payload.index(b':', 27) + 1
         except ValueError:
             if DEBUG:
                 print("DEBUG: No terminating colon found in header info field.")
@@ -196,9 +198,9 @@ def parse_packet(packet: bytes):
         info_field = info_and_payload[:end_idx]
         payload = info_and_payload[end_idx:]
     else:
-        # Data packet: info field is fixed to 28 bytes.
-        info_field = info_and_payload[:28]
-        payload = info_and_payload[28:]
+        # Data packet: info field is fixed to 32 bytes.
+        info_field = info_and_payload[:32]
+        payload = info_and_payload[32:]
     try:
         info_str = info_field.decode('utf-8', errors='replace')
     except Exception as e:
@@ -226,13 +228,13 @@ def parse_packet(packet: bytes):
     total = None
     if '/' in seq_burst:
         seq_burst_part, total_str = seq_burst.split('/')
-        if len(seq_burst_part) != 4:
+        if len(seq_burst_part) != 8:
             if DEBUG:
-                print("DEBUG: Header packet seq/burst part not 4 digits:", seq_burst_part)
+                print("DEBUG: Header packet seq/burst part not 8 digits:", seq_burst_part)
             return None
         seq = 1
         try:
-            burst_to = int(seq_burst_part[2:], 16)
+            burst_to = int(seq_burst_part[4:], 16)
         except Exception as e:
             if DEBUG:
                 print("DEBUG: Exception converting burst_to:", e)
@@ -244,13 +246,13 @@ def parse_packet(packet: bytes):
                 print("DEBUG: Exception converting total:", e)
             total = None
     else:
-        if len(seq_burst) != 4:
+        if len(seq_burst) != 8:
             if DEBUG:
-                print("DEBUG: Data packet seq/burst part not 4 digits:", seq_burst)
+                print("DEBUG: Data packet seq/burst part not 8 digits:", seq_burst)
             return None
         try:
-            seq = int(seq_burst[:2], 16)
-            burst_to = int(seq_burst[2:], 16)
+            seq = int(seq_burst[:4], 16)
+            burst_to = int(seq_burst[4:], 16)
         except Exception as e:
             if DEBUG:
                 print("DEBUG: Exception converting seq or burst:", e)
@@ -413,7 +415,19 @@ def sender_main(args):
 
     # Allowed window sizes: 1, 2, 4, 8, 10; starting at 4.
     allowed_windows = [1, 2, 4, 6, 8, 10]
-    current_window_index = 2  # starts at 4
+    if args.window_size != "auto":
+        try:
+            win_val = int(args.window_size)
+            if win_val in allowed_windows:
+                current_window_index = allowed_windows.index(win_val)
+            else:
+                print(f"Provided window size {win_val} is not allowed. Defaulting to 4.")
+                current_window_index = allowed_windows.index(4)
+        except ValueError:
+            print("Invalid window size argument. Defaulting to 4.")
+            current_window_index = allowed_windows.index(4)
+    else:
+        current_window_index = allowed_windows.index(4)  # default if auto
     successful_burst_count = 0  # count of consecutive fully-acknowledged bursts at current window size
 
     # Open the connection.
@@ -475,7 +489,7 @@ def sender_main(args):
         return None
 
     flush_queue()
-    # Send header packet (seq 1) and wait for ACK "01"
+    # Send header packet (seq 1) and wait for ACK "0001"
     print("Sending header packet (seq=1) …")
     header_len = send_packet(1)
     total_bytes_sent += header_len  # header not counted
@@ -503,7 +517,7 @@ def sender_main(args):
         except Exception:
             continue
     state["current_packet"] = ack_int + 1
-    print("Header ACK received (01); proceeding with data packets …")
+    print("Header ACK received (0001); proceeding with data packets …")
     # Main loop for data packets using dynamic sliding window.
     while state["current_packet"] <= total_including_header:
         flush_queue()
@@ -619,7 +633,7 @@ def receiver_main(args):
     def compute_cumulative_ack(transfer):
         data_keys = sorted([k for k in transfer["packets"].keys() if k >= 2])
         if not data_keys:
-            return "02"
+            return "0002"
         contiguous = 2
         for num in range(2, max(data_keys)+2):
             if num in transfer["packets"]:
@@ -627,9 +641,9 @@ def receiver_main(args):
             else:
                 break
         if contiguous == 2:
-            return "02"
+            return "0002"
         else:
-            return f"02-{contiguous:02X}"
+            return f"0002-{contiguous:04X}"
 
     # Main receiver loop.
     while True:
@@ -717,7 +731,7 @@ def receiver_main(args):
             }
             print(f"Started transfer from {sender} (File: {filename}, ID: {file_id})")
             print(f"Total packets required (including header): {total_packets}")
-            send_ack(args.my_callsign, sender, file_id, "01")
+            send_ack(args.my_callsign, sender, file_id, "0001")
             continue
 
         transfer = transfers[file_id]
