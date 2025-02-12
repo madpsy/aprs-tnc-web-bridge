@@ -511,19 +511,20 @@ func sendAck(conn KISSConnection, myCallsign, remote, fileID, ackStr string) {
 
 // Arguments holds the command‑line arguments.
 type Arguments struct {
-	MyCallsign string // Your callsign (required)
-	Connection string // "tcp" or "serial"
-	Debug      bool   // Enable debug output
-	Host       string // TCP host
-	Port       int    // TCP port
-	SerialPort string // Serial port (e.g. COM3 or /dev/ttyUSB0)
-	Baud       int    // Baud rate for serial
-	OneFile    bool   // Exit after successfully receiving one file
+	MyCallsign     string  // Your callsign (required)
+	Connection     string  // "tcp" or "serial"
+	Debug          bool    // Enable debug output
+	Host           string  // TCP host
+	Port           int     // TCP port
+	SerialPort     string  // Serial port (e.g. COM3 or /dev/ttyUSB0)
+	Baud           int     // Baud rate for serial
+	OneFile        bool    // Exit after successfully receiving one file
 
 	// New options:
-	Execute  string // If received file's name matches this, execute it instead of saving.
-	Replace  bool   // If specified, overwrite existing files if a new file is received with the same name.
-	OnlyFrom string // Only accept files from the specified callsign.
+	Execute        string  // If received file's name matches this, execute it with bash instead of saving.
+	Replace        bool    // If specified, overwrite existing files if a new file is received with the same name.
+	OnlyFrom       string  // Only accept files from the specified callsign.
+	ExecuteTimeout float64 // Maximum seconds to allow executed file to run (0 means unlimited)
 }
 
 func parseArguments() *Arguments {
@@ -538,8 +539,9 @@ func parseArguments() *Arguments {
 	flag.BoolVar(&args.OneFile, "one-file", false, "Exit after successfully receiving one file")
 	flag.StringVar(&args.Execute, "execute", "", "If received file's name matches this, execute it with bash instead of saving")
 	flag.BoolVar(&args.Replace, "replace", false, "If specified, overwrite existing files if a new file is received with the same name")
-	// New flag: only-from
 	flag.StringVar(&args.OnlyFrom, "only-from", "", "Only accept files from the specified callsign")
+	// New flag: execute-timeout
+	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -771,15 +773,41 @@ func receiverMain(args *Arguments) {
 						os.Remove(tmpName)
 						continue
 					}
-					go func(tmpName string, cmd *exec.Cmd) {
-						err := cmd.Wait()
-						if err != nil {
-							log.Printf("Asynchronous execution finished with error: %v", err)
+					// Use the execute-timeout if set.
+					go func(tmpName string, cmd *exec.Cmd, timeout float64) {
+						if timeout > 0 {
+							log.Printf("Execution timeout is set to %.2f seconds", timeout)
+							done := make(chan error, 1)
+							go func() {
+								done <- cmd.Wait()
+							}()
+							select {
+							case err := <-done:
+								if err != nil {
+									log.Printf("Asynchronous execution finished with error: %v", err)
+								} else {
+									log.Printf("Asynchronous execution finished successfully.")
+								}
+							case <-time.After(time.Duration(timeout * float64(time.Second))):
+								log.Printf("Execution of file %s exceeded timeout of %.2f seconds. Killing process.", tmpName, timeout)
+								if err := cmd.Process.Kill(); err != nil {
+									log.Printf("Failed to kill process: %v", err)
+								}
+								err := <-done
+								if err != nil {
+									log.Printf("Asynchronous execution finished with error after killing process: %v", err)
+								}
+							}
 						} else {
-							log.Printf("Asynchronous execution finished successfully.")
+							err := cmd.Wait()
+							if err != nil {
+								log.Printf("Asynchronous execution finished with error: %v", err)
+							} else {
+								log.Printf("Asynchronous execution finished successfully.")
+							}
 						}
 						os.Remove(tmpName)
-					}(tmpName, cmd)
+					}(tmpName, cmd, args.ExecuteTimeout)
 				} else {
 					// Save file normally.
 					var outname string
