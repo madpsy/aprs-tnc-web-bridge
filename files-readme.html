@@ -42,14 +42,15 @@
   <div class="section">
     <h2>Introduction</h2>
     <p>
-      The <strong>KISS File Transfer Protocol</strong> is implemented in the <code>files.py</code> script.
-      It is a custom, lightweight protocol built for reliable file transfer via a KISS TNC over TCP or serial connections.
-      The protocol uses KISS framing with an AX.25-style header and supports features such as dynamic sliding window
-      sizing, cumulative acknowledgments, retransmission on timeouts, a final handshake, and optional file compression.
+      The <strong>KISS File Transfer Protocol</strong> is implemented in several Go applications:
+      a combined app called <code>files</code> (which acts as either sender or receiver based on the <code>--role</code> flag),
+      as well as dedicated <code>sender</code> and <code>receiver</code> apps. In addition, a proxy app can be used to forward packets
+      between two KISS TNC connections. This protocol is designed for reliable file transfer over TCP or serial connections,
+      even when the data is carried over RF links by radios.
     </p>
     <p>
-      In this protocol, the file is divided into a header packet (sequence number 1) that carries file metadata and several data packets (sequence numbers ≥ 2)
-      that carry the file data in fixed-size chunks.
+      The file is divided into a <strong>header packet</strong> (sequence number 1) that carries metadata and multiple
+      <strong>data packets</strong> (sequence numbers ≥ 2) that carry file data in fixed-size chunks.
     </p>
   </div>
 
@@ -58,17 +59,14 @@
 
     <h3>KISS Framing</h3>
     <p>
-      Every packet is encapsulated within a KISS frame. The framing process involves the following steps:
+      Every packet is encapsulated within a KISS frame. The framing process works as follows:
     </p>
     <ul>
-      <li><strong>Starting Flag:</strong> A single byte (<code>0xC0</code>) marks the beginning of the frame.</li>
+      <li><strong>Starting Flag:</strong> A byte (<code>0xC0</code>) marks the beginning of the frame.</li>
       <li><strong>Command Byte:</strong> For data packets, this is <code>0x00</code>.</li>
-      <li><strong>Escaped Packet Data:</strong> The packet contents are escaped so that any occurrence of special flag bytes does not interfere with framing.</li>
+      <li><strong>Escaped Packet Data:</strong> Packet content is processed to escape any occurrences of flag bytes.</li>
       <li><strong>Ending Flag:</strong> A closing <code>0xC0</code> byte marks the end of the frame.</li>
     </ul>
-    <p>
-      <strong>Pseudocode Example:</strong>
-    </p>
     <pre>
 function buildKISSFrame(packet):
     FLAG = 0xC0
@@ -76,22 +74,16 @@ function buildKISSFrame(packet):
     escaped_packet = escapeSpecialBytes(packet)
     return FLAG + CMD + escaped_packet + FLAG
     </pre>
-    <p>
-      The function <code>escapeSpecialBytes</code> scans the packet data and escapes any occurrences of <code>0xC0</code> or <code>0xDB</code> as needed.
-    </p>
 
     <h3>AX.25 Header</h3>
     <p>
-      Each packet begins with a fixed 16-byte AX.25 header that contains:
+      Each packet begins with a fixed 16-byte AX.25 header containing:
     </p>
     <ul>
-      <li><strong>Destination Callsign:</strong> Encoded in 7 bytes (with proper padding and bit shifting).</li>
-      <li><strong>Source Callsign:</strong> Also encoded in 7 bytes (with a flag indicating the final address in the header chain).</li>
-      <li><strong>Control and Protocol Identifier:</strong> Two bytes (typically <code>0x03</code> and <code>0xF0</code>).</li>
+      <li><strong>Destination Callsign:</strong> 7 bytes (padded, uppercase, and bit-shifted).</li>
+      <li><strong>Source Callsign:</strong> 7 bytes (with the final address flag set).</li>
+      <li><strong>Control &amp; PID:</strong> 2 bytes (typically <code>0x03</code> and <code>0xF0</code>).</li>
     </ul>
-    <p>
-      <strong>Pseudocode Example:</strong>
-    </p>
     <pre>
 function buildAX25Header(source, destination):
     dest = encodeAddress(destination, is_last = False)
@@ -100,235 +92,115 @@ function buildAX25Header(source, destination):
     PID     = 0xF0
     return dest + src + CONTROL + PID
     </pre>
-    <p>
-      Here, <code>encodeAddress</code> handles the callsign padding, conversion to uppercase, and bit shifting.
-    </p>
 
     <h3>Info Field and Payload</h3>
     <p>
-      Immediately after the AX.25 header is the <strong>info field</strong> which is concatenated with the binary payload.
-      The format of this field depends on the type of packet:
+      Immediately following the AX.25 header is the <strong>info field</strong>.
+      Its format depends on the packet type:
     </p>
 
-    <h4>Header Packet (Sequence Number 1)</h4>
+    <h4>Header Packet (Sequence 1)</h4>
     <p>
-      The header packet’s info field is constructed using the following format:
+      The header packet’s info field is formatted as:
     </p>
     <pre>
 "SENDER&gt;RECEIVER:FILEID:0001{burst_to_hex}/{total_hex}:"
     </pre>
     <p>
-      Where:
+      Here:
       <ul>
-        <li><code>SENDER</code> and <code>RECEIVER</code> are the padded callsigns.</li>
-        <li><code>FILEID</code> is a unique two‐character identifier for the file.</li>
+        <li><code>SENDER</code> and <code>RECEIVER</code> are the padded, uppercase callsigns.</li>
+        <li><code>FILEID</code> is a unique two‑character file identifier.</li>
         <li><code>0001</code> indicates that this is the header packet.</li>
-        <li><code>{burst_to_hex}</code> is the burst boundary (for the header this is set to 1).</li>
-        <li><code>{total_hex}</code> is the total number of data packets (in 4-digit hexadecimal).</li>
+        <li><code>{burst_to_hex}</code> is the burst boundary (set to 0001 for the header).</li>
+        <li><code>{total_hex}</code> is the total number of packets (data packets only, in 4-digit hexadecimal).</li>
       </ul>
     </p>
     <p>
-      The header packet’s payload is a UTF-8 encoded string containing metadata separated by pipes (<code>|</code>). The metadata fields include timeout settings, filename, file sizes, MD5 checksum, file identifier, and compression flag.
+      The header payload (following the info field) is a UTF‑8 encoded, pipe‑delimited metadata string that includes:
     </p>
-    <p>
-      <strong>Pseudocode Example for Header Info Field:</strong>
-    </p>
-    <pre>
-if sequence == 1:
-    total_hex = format(total_data_packets, "04X")
-    burst_to_hex = format(burst_to, "04X")   // For header, burst_to is 1
-    info_field = sender + ">" + receiver + ":" + file_id + ":0001" + burst_to_hex + "/" + total_hex + ":"
-    payload = metadata_string   // e.g., "timeout|retries|filename|orig_size|comp_size|md5|file_id|compress_flag|total_packets"
-    </pre>
+    <ul>
+      <li>timeout_seconds</li>
+      <li>timeout_retries</li>
+      <li>filename</li>
+      <li>original_size</li>
+      <li>compressed_size</li>
+      <li>md5_checksum</li>
+      <li>fileID (repeated)</li>
+      <li>encodingMethod (0 for binary, 1 for Base64)</li>
+      <li>compress_flag (1 if compressed, 0 otherwise)</li>
+      <li>total_packets (header + data packets)</li>
+    </ul>
 
-    <h4>Data Packets (Sequence Numbers ≥ 2)</h4>
+    <h4>Data Packets (Sequence ≥ 2)</h4>
     <p>
-      Each data packet’s info field is structured as follows:
+      Data packets use a fixed 32‑byte info field formatted as:
     </p>
     <pre>
 "SENDER&gt;RECEIVER:FILEID:{seq_hex}{burst_to_hex}:"
     </pre>
     <p>
-      In this format:
-      <ul>
-        <li><code>{seq_hex}</code> is the 4-digit hexadecimal representation of the packet’s sequence number.</li>
-        <li><code>{burst_to_hex}</code> indicates the burst boundary for the current sliding window burst.</li>
-      </ul>
+      Where <code>{seq_hex}</code> is the 4-digit hexadecimal sequence number and <code>{burst_to_hex}</code> indicates the burst boundary.
+      The payload following this info field is the file data chunk (up to <code>CHUNK_SIZE</code> bytes). No extra encoding method byte is transmitted for data packets.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Sequence Numbers and Maximum File Size</h2>
+    <p>
+      Sequence numbers are 4-character hexadecimal values. The header uses <code>0001</code> and data packets are numbered sequentially starting at <code>0002</code>.
     </p>
     <p>
-      The payload following the info field contains a chunk of file data. The size of each chunk is defined by <code>CHUNK_SIZE</code> (typically 205 bytes).
-    </p>
-    <p>
-      <strong>Pseudocode Example for Data Packet Info Field:</strong>
+      With a maximum sequence value of <code>FFFF</code> (65,535) and the header using <code>0001</code>, the maximum number of data packets is 65,534.
+      If each data packet carries up to <code>CHUNK_SIZE</code> bytes (e.g., 205 bytes), the maximum file size is approximately:
     </p>
     <pre>
-if sequence >= 2:
-    seq_hex = format(sequence, "04X")
-    burst_to_hex = format(burst_to, "04X")
-    info_field = sender + ">" + receiver + ":" + file_id + ":" + seq_hex + burst_to_hex + ":"
-    payload = file_chunk   // A slice of the file data (up to CHUNK_SIZE bytes)
+MAX_FILE_SIZE ≈ (65,535 - 1) × CHUNK_SIZE bytes
+    </pre>
+    <p>
+      For example, with a CHUNK_SIZE of 205:
+    </p>
+    <pre>
+65,534 × 205 ≈ 13.4 MB
     </pre>
   </div>
 
   <div class="section">
-    <h2>Sequence Number Format and Maximum File Size</h2>
-    <p>
-      Sequence numbers in this protocol are represented as 4-character hexadecimal values. This means:
-    </p>
-    <ul>
-      <li>The hexadecimal values range from <code>0000</code> to <code>FFFF</code> (0 to 65,535 in decimal).</li>
-      <li>The header packet is assigned sequence number <code>0001</code>, and data packets are numbered sequentially (e.g. <code>0002</code>, <code>0003</code>, …).</li>
-    </ul>
-    <p>
-      Given that only 4 hexadecimal digits are used, the maximum sequence number is <code>FFFF</code> (65,535). Since sequence <code>0001</code> is used for the header,
-      the maximum number of data packets available is 65,535 – 1 = 65,534.
-    </p>
-    <p>
-      With a fixed payload size (<code>CHUNK_SIZE</code>) per data packet (typically 205 bytes), the maximum file size that can be transmitted is approximately:
-    </p>
-    <pre>
-Maximum file size ≈ (65,535 - 1) × CHUNK_SIZE bytes
-    </pre>
-    <p>
-      For example, if <code>CHUNK_SIZE</code> is 205, then:
-    </p>
-    <pre>
-65,534 × 205 ≈ 13,434,470 bytes (~13.4 MB)
-    </pre>
-    <p>
-      <strong>Pseudocode Example:</strong>
-    </p>
-    <pre>
-MAX_SEQ_HEX = 0xFFFF        // 65,535 in decimal
-MAX_DATA_PACKETS = MAX_SEQ_HEX - 1
-MAX_FILE_SIZE = MAX_DATA_PACKETS * CHUNK_SIZE
-    </pre>
-  </div>
-
-  <div class="section">
-    <h2>Protocol Flows and Packet Sequences</h2>
-    <p>
-      The protocol is divided into several phases:
-    </p>
+    <h2>Protocol Flow</h2>
     <ol>
       <li>
-        <strong>Initialization:</strong>
+        <strong>Initialization (Sender):</strong>
         <ul>
-          <li>The sender reads the file, optionally compresses it using <code>zlib.compress</code> (level 9), computes its MD5 hash, and splits the file into chunks.</li>
-          <li>A header packet is built containing metadata such as file size, filename, checksum, and the total number of packets.</li>
-          <li><strong>Pseudocode:</strong>
-            <pre>
-file_data = readFile(filename)
-if compression_enabled:
-    compressed_data = compress(file_data)
-    data_to_send = compressed_data
-else:
-    data_to_send = file_data
-
-md5_hash = computeMD5(file_data)
-chunks = splitIntoChunks(data_to_send, CHUNK_SIZE)
-total_packets = len(chunks) + 1  // include header
-            </pre>
-          </li>
+          <li>The sender reads (and optionally compresses) the file, computes its MD5 checksum, and splits it into chunks.</li>
+          <li>A header packet is built that contains the info field and a metadata payload (with the encodingMethod specified in field 8).</li>
         </ul>
       </li>
       <li>
         <strong>Header Exchange:</strong>
         <ul>
-          <li>The sender sends the header packet (sequence 1) using KISS framing.</li>
-          <li>The receiver processes the header, extracts metadata, and sends an ACK with value <code>0001</code> to confirm readiness.</li>
-          <li>
-            <strong>Pseudocode:</strong>
-            <pre>
-sender:
-    header_packet = buildHeaderPacket(metadata, file_id, burst_to=1)
-    sendFrame(header_packet)
-    header_start = currentTime()
-    ack = waitForACK(timeout)
-    header_ack_duration = currentTime() - header_start
-    // Update per-packet timeout to account for 1 sent header + 1 ACK = 2 events
-    per_packet_timeout = header_ack_duration / 2
-            </pre>
-          </li>
+          <li>The sender transmits the header packet (sequence 1) using KISS framing over the RF link.</li>
+          <li>The receiver extracts the metadata and sends an ACK of <code>0001</code> to signal readiness.</li>
         </ul>
       </li>
       <li>
         <strong>Data Packet Transmission (Sliding Window):</strong>
         <ul>
-          <li>The sender transmits bursts of data packets governed by a dynamic sliding window.</li>
-          <li>After sending a burst, the sender waits for a cumulative ACK indicating the highest contiguous sequence received.</li>
-          <li>If all packets in the burst are acknowledged, the window may be increased; otherwise, it is decreased and missing packets are retransmitted.</li>
-          <li>
-            <strong>Pseudocode:</strong>
-            <pre>
-window = initial_window_value  // e.g., 4
-consecutive_successes = 0
-
-while current_packet ≤ total_packets:
-    burst_start = currentTime()
-    // Send a burst of packets from current_packet to min(current_packet + window - 1, total_packets)
-    for seq in current_packet to min(current_packet + window - 1, total_packets):
-        sendFrame(buildDataPacket(seq, burst_to))
-    
-    ack = waitForACK(timeout = (num_packets * per_packet_timeout + timeout_seconds))
-    
-    // Measure burst round-trip duration
-    burst_duration = currentTime() - burst_start
-    // Update per-packet timeout using: (burst_duration / (number_of_packets_sent + 1))
-    // The +1 accounts for the ACK received for the burst.
-    per_packet_timeout = burst_duration / (number_of_packets_sent + 1)
-    log("Updated per-packet timeout to", per_packet_timeout)
-    
-    if ack == expected_cumulative_value:
-        consecutive_successes += 1
-        current_packet = ack + 1
-        if consecutive_successes ≥ threshold and window < max_window:
-            window = window + 1   // Increase window size
-            consecutive_successes = 0
-    else:
-        window = max(window - 1, 1)   // Decrease window size
-        consecutive_successes = 0
-        // Optionally retransmit missing packets
-            </pre>
-          </li>
+          <li>The sender transmits bursts of data packets using a dynamic sliding window.</li>
+          <li>Each data packet’s info field is 32 bytes; its payload is a file chunk (Base64‑encoded if the header specifies encoding method 1).</li>
+          <li>After each burst, the sender waits for a cumulative ACK (e.g. <code>0001-XXXX</code>) indicating the highest contiguous packet received.</li>
         </ul>
       </li>
       <li>
         <strong>ACK Mechanism:</strong>
         <ul>
-          <li>The receiver calculates a cumulative ACK:
-            <pre>
-if only header received:
-    cumulative_ACK = "0001"
-else:
-    cumulative_ACK = "0001-XXXX"  // XXXX is the highest contiguous data packet number in hex
-            </pre>
-          </li>
-          <li>This cumulative ACK is sent back to the sender.</li>
+          <li>The receiver calculates a cumulative ACK value and sends it back to the sender.</li>
         </ul>
       </li>
       <li>
         <strong>Final Handshake:</strong>
         <ul>
-          <li>When the sender’s cumulative ACK indicates that all packets have been received, the sender immediately sends a final confirmation (FIN‑ACK) packet:
-            <pre>
-sendFrame("SENDER>RECEIVER:" + file_id + ":ACK:FIN-ACK")
-            </pre>
-          </li>
-          <li>The sender then waits for <code>1.5 + timeout-seconds</code> seconds for any retransmitted cumulative ACK and resends the FIN‑ACK if necessary.</li>
-          <li>
-            <strong>Pseudocode:</strong>
-            <pre>
-if allPacketsAcknowledged():
-    sendFrame(buildFINACK(file_id))
-    wait_time = 1.5 + timeout_seconds
-    end_time = currentTime() + wait_time
-    while currentTime() < end_time:
-        if retransmittedACKReceived():
-            sendFrame(buildFINACK(file_id))
-            break
-            </pre>
-          </li>
+          <li>Once all packets are received, the sender sends a FIN‑ACK packet.</li>
+          <li>The sender waits a short period (1.5 + timeout seconds) and retransmits the FIN‑ACK if needed.</li>
         </ul>
       </li>
     </ol>
@@ -337,7 +209,9 @@ if allPacketsAcknowledged():
   <div class="section">
     <h2>Dynamic Sliding Window and Retry Mechanism</h2>
     <p>
-      To optimize throughput, the sender uses a dynamic sliding window. The sender also dynamically adjusts the per-packet timeout based on measured round-trip times. Importantly, the calculation accounts for the fact that the timing includes both the packets sent and the ACK received. For example, if 4 packets are sent, the measured duration is divided by 5 (4 + 1) to compute the new per-packet timeout.
+      The sender uses a dynamic sliding window. After sending a burst of packets, it waits for a cumulative ACK.
+      The measured round-trip time is divided by (number of packets sent + 1) to update the per‑packet timeout.
+      Successful bursts may cause the window size to increase, while missing packets result in a reduction.
     </p>
     <pre>
 window = initial_window_value  // e.g., 4
@@ -349,32 +223,26 @@ while current_packet ≤ total_packets:
         sendFrame(buildDataPacket(seq, burst_to))
     
     ack = waitForACK(timeout = (num_packets * per_packet_timeout + timeout_seconds))
-    
     burst_duration = currentTime() - burst_start
-    // Update per-packet timeout: include both the sent packets and the ACK in the calculation.
-    per_packet_timeout = burst_duration / (number_of_packets_sent + 1)
-    log("Updated per-packet timeout to", per_packet_timeout)
+    per_packet_timeout = burst_duration / (packets_sent + 1)
     
     if ack == expected_cumulative_value:
         consecutive_successes += 1
         current_packet = ack + 1
         if consecutive_successes ≥ threshold and window < max_window:
-            window = window + 1   // Increase window size
+            window++   // Increase window size
             consecutive_successes = 0
     else:
         window = max(window - 1, 1)   // Decrease window size
         consecutive_successes = 0
-        // Optionally retransmit missing packets
     </pre>
-    <p>
-      This approach allows the sender to adapt its timeout based on real-world conditions, improving both performance and reliability.
-    </p>
   </div>
 
   <div class="section">
     <h2>Optional Compression</h2>
     <p>
-      Compression is optional and may be enabled to reduce the size of the data transmitted. The process is as follows:
+      Compression is optional. If enabled, the sender compresses the file using zlib (best compression)
+      and includes both the original and compressed sizes in the header metadata.
     </p>
     <ul>
       <li>
@@ -387,7 +255,7 @@ else:
         </pre>
       </li>
       <li>
-        <strong>Header Metadata:</strong> The header packet includes a <code>compress_flag</code> and both original and compressed file sizes.
+        <strong>Header Metadata:</strong> Contains a <code>compress_flag</code> (1 if compressed, 0 otherwise) along with file sizes.
       </li>
       <li>
         <strong>Receiver:</strong>
@@ -404,59 +272,93 @@ else:
   <div class="section">
     <h2>Example Command Line Usage</h2>
     <p>
-      The script is named <code>files.py</code>. Below are example commands for both the sender and the receiver.
+      The Go applications include a combined app called <code>files</code> (acting as sender or receiver based on the <code>--role</code> flag),
+      dedicated <code>sender</code> and <code>receiver</code> apps, and a <code>proxy</code> app.
     </p>
     <div class="example">
-      <h4>Sender Example Command:</h4>
+      <h4>Combined App Example (Files)</h4>
       <pre>
-python3 files.py --role sender --my-callsign MYCALL --receiver-callsign DESTCALL --file myfile.txt --host 192.168.1.100 --port 9001 --timeout-seconds 5 --timeout-retries 5
+# As sender:
+./files --role sender --my-callsign MM3NDH-14 --receiver-callsign MM3NDH-11 --file test.sh --host 192.168.1.100 --port 9001 --timeout-seconds 5 --timeout-retries 5 [--base64]
+
+# As receiver:
+./files --role receiver --my-callsign MM3NDH-11 --host 0.0.0.0 --port 9001 --one-file [--execute test.sh]
       </pre>
-      <p>
-        In this command:
-      </p>
-      <ul>
-        <li><code>--role sender</code> sets the script to sender mode.</li>
-        <li><code>--my-callsign MYCALL</code> defines the sender's callsign.</li>
-        <li><code>--receiver-callsign DESTCALL</code> sets the recipient’s callsign.</li>
-        <li><code>--file myfile.txt</code> specifies the file to be transferred.</li>
-        <li><code>--host 192.168.1.100</code> and <code>--port 9001</code> define the TCP KISS TNC’s hostname and port.</li>
-        <li><code>--timeout-seconds</code> and <code>--timeout-retries</code> configure the retry logic.</li>
-      </ul>
     </div>
     <div class="example">
-      <h4>Receiver Example Command:</h4>
+      <h4>Dedicated Sender/Receiver Apps</h4>
       <pre>
-python3 files.py --role receiver --my-callsign DESTCALL --host 0.0.0.0 --port 9001 --one-file
+# Dedicated sender:
+./sender --my-callsign MM3NDH-14 --receiver-callsign MM3NDH-11 --file test.sh --host 192.168.1.100 --port 9001 --timeout-seconds 5 --timeout-retries 5 [--base64]
+
+# Dedicated receiver:
+./receiver --my-callsign MM3NDH-11 --host 0.0.0.0 --port 9001 --one-file [--execute test.sh]
+      </pre>
+    </div>
+    <div class="example">
+      <h4>Proxy App Usage</h4>
+      <pre>
+# Forward packets from TNC1 to TNC2:
+./proxy --tnc1-connection-type tcp --tnc1-host 127.0.0.1 --tnc1-port 9001 --tnc2-connection-type tcp --tnc2-host 127.0.0.1 --tnc2-port 9002 --callsigns MM3NDH-14,MM3NDH-11 [--save-files]
       </pre>
       <p>
-        In this command:
+        The proxy receives KISS frames from one connection, parses them, and forwards complete packet frames to the other connection.
+        When the <code>--save-files</code> option is specified, it reassembles and saves each file using a filename that prepends the sender’s
+        and receiver’s callsigns.
       </p>
-      <ul>
-        <li><code>--role receiver</code> sets the script to receiver mode.</li>
-        <li><code>--my-callsign DESTCALL</code> defines the receiver’s callsign.</li>
-        <li>
-          <code>--host 0.0.0.0</code> specifies the hostname (or IP address) of the TCP KISS TNC.
-        </li>
-        <li><code>--port 9001</code> sets the port on which the TCP KISS TNC is operating.</li>
-        <li><code>--one-file</code> instructs the receiver to exit after successfully receiving one file.</li>
-      </ul>
     </div>
+  </div>
+
+  <div class="section">
+    <h2>Network Diagram</h2>
+    <p>
+      Below is a diagram depicting a typical deployment where the RF links are clearly shown:
+    </p>
+    <pre>
+           +------------------------------------------+
+           |                Sender                    |
+           | (Serial TNC on 144 MHz radio, e.g. COM3) |
+           +----------------------+-------------------+
+                                  | RF Link (144 MHz)
+                                  |
+                                  v
+                      +------------------------------+
+                      |       Proxy Application      |
+                      |                              |
+                      | TNC1: Connected to a TCP TNC |
+                      |        (IP: 192.168.0.x)     |
+                      |       via RF (144 MHz)       |
+                      |                              |
+                      | TNC2: Connected to Serial TNC|
+                      |        via RF (433 MHz)      |
+                      +--------------+---------------+
+                                     | RF Link (433 MHz)
+                                     |
+                                     v
+           +------------------------------------------+
+           |               Receiver                   |
+           | (TCP TNC on 433 MHz radio, IP: 10.1.0.x) |
+           +------------------------------------------+
+    </pre>
+    <p>
+      In this setup:
+      <br>- The <strong>Sender</strong> is connected to a radio (via its serial TNC) operating at 144 MHz.
+      <br>- The <strong>Proxy</strong> sits in the middle. Its TNC1 interface (a TCP TNC with a 192.168.0.xx IP) connects via an RF link (144 MHz)
+         to the sender, while its TNC2 interface is connected to a radio (via a serial TNC) operating at 433 MHz.
+      <br>- The <strong>Receiver</strong> connects to a TCP TNC (with a 192.168.0.xx IP) on the 433 MHz side.
+    </p>
   </div>
 
   <div class="section">
     <h2>Summary and Final Remarks</h2>
     <p>
-      The KISS File Transfer Protocol implemented in <code>files.py</code> offers a robust mechanism for reliable file transfer.
-      By leveraging KISS framing, a detailed AX.25-style header, dynamic sliding windows, cumulative ACKs, a final FIN‑ACK handshake,
-      and optional compression, it ensures that file metadata is clearly communicated, data is transmitted efficiently, and both the sender and
-      receiver can recover gracefully from packet loss or delays.
+      The KISS File Transfer Protocol implemented in Go provides a robust mechanism for reliable file transfer.
+      Using KISS framing, an AX.25-style header, dynamic sliding windows, cumulative ACKs, a final FIN‑ACK handshake,
+      optional compression, and an explicit encoding method specified in the header metadata, the protocol ensures clear communication of file metadata
+      and efficient data transmission even over RF links.
     </p>
     <p>
-      The dynamic per-packet timeout mechanism adapts the base timeout by measuring the round-trip time of each burst (or header exchange)
-      and dividing by the number of packets sent plus one for the ACK. This allows the protocol to automatically tune itself to prevailing network conditions.
-    </p>
-    <p>
-      The pseudocode provided in various sections can serve as a starting point for developers looking to write their own implementation of this protocol.
+      The per‑packet timeout is dynamically adjusted based on the measured round-trip time, and the sliding window mechanism adapts to network conditions to maximize throughput.
     </p>
   </div>
 </body>

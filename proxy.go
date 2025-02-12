@@ -1,12 +1,18 @@
+// proxy.go
 package main
 
 import (
 	"bytes"
+	"compress/zlib"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,27 +98,47 @@ func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	return frames, data
 }
 
-// decodeAX25Address converts a 7‑byte AX.25 address field to a callsign.
-func decodeAX25Address(addr []byte) string {
-	if len(addr) < 7 {
-		return ""
+// padCallsign pads and uppercases a callsign to 9 characters.
+func padCallsign(cs string) string {
+	return fmt.Sprintf("%-9s", strings.ToUpper(cs))
+}
+
+// generateFileID returns a two‑character random file ID.
+func generateFileID() string {
+	chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	return string([]byte{chars[rand.Intn(len(chars))], chars[rand.Intn(len(chars))]})
+}
+
+// encodeAX25Address encodes an AX.25 address field for the given callsign.
+func encodeAX25Address(callsign string, isLast bool) []byte {
+	parts := strings.Split(strings.ToUpper(callsign), "-")
+	call := parts[0]
+	if len(call) < 6 {
+		call = call + strings.Repeat(" ", 6-len(call))
+	} else if len(call) > 6 {
+		call = call[:6]
 	}
-	cs := make([]byte, 6)
+	addr := make([]byte, 7)
 	for i := 0; i < 6; i++ {
-		cs[i] = addr[i] >> 1
+		addr[i] = call[i] << 1
 	}
-	return strings.TrimSpace(string(cs))
+	addr[6] = 0x60
+	if isLast {
+		addr[6] |= 0x01
+	}
+	return addr
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+// buildAX25Header builds an AX.25 header using the sender and receiver callsigns.
+func buildAX25Header(sender, receiver string) []byte {
+	dest := encodeAX25Address(receiver, false)
+	src := encodeAX25Address(sender, true)
+	header := append(dest, src...)
+	header = append(header, 0x03, 0xF0)
+	return header
 }
 
-// canonicalKey returns a key that is independent of the packet direction by
-// alphabetically ordering the two callsigns and appending the fileID.
+// canonicalKey returns a key independent of direction by alphabetically ordering the callsigns and appending the fileID.
 func canonicalKey(sender, receiver, fileID string) string {
 	s := strings.ToUpper(strings.TrimSpace(sender))
 	r := strings.ToUpper(strings.TrimSpace(receiver))
@@ -123,28 +149,35 @@ func canonicalKey(sender, receiver, fileID string) string {
 	return fmt.Sprintf("%s|%s|%s", r, s, fid)
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // -----------------------------------------------------------------------------
 // Packet Parsing: Structures and Functions
 // -----------------------------------------------------------------------------
 
 // Packet represents a parsed packet (data or ACK).
+// The EncodingMethod field holds the extra one-byte value (0=binary, 1=base64).
 type Packet struct {
-	Type     string // "data" or "ack"
-	Sender   string
-	Receiver string
-	FileID   string
-	Seq      int
-	BurstTo  int
-	Total    int    // For header packets (seq==1), total number of packets.
-	Payload  []byte // The inner payload.
-	RawInfo  string // The decoded info field.
-	Ack      string // For ACK packets.
+	Type           string // "data" or "ack"
+	Sender         string
+	Receiver       string
+	FileID         string
+	Seq            int
+	BurstTo        int
+	Total          int    // For header packets (seq==1), total number of packets.
+	Payload        []byte // The inner payload.
+	RawInfo        string // The decoded info field.
+	Ack            string // For ACK packets.
+	EncodingMethod byte   // new: 0=binary, 1=base64
 }
 
 // parsePacket attempts to parse a packet from raw unescaped bytes.
-// It returns nil if the packet is too short or malformed.
 func parsePacket(packet []byte) *Packet {
-	// Expect at least 16 bytes for the AX.25 header.
 	if len(packet) < 16 {
 		return nil
 	}
@@ -178,7 +211,6 @@ func parsePacket(packet []byte) *Packet {
 				RawInfo:  string(infoAndPayload),
 			}
 		}
-		// Fallback if structure is not as expected.
 		ackVal := ""
 		parts := strings.Split(string(infoAndPayload), "ACK:")
 		if len(parts) >= 2 {
@@ -191,28 +223,30 @@ func parsePacket(packet []byte) *Packet {
 		}
 	}
 
-	// Process as a data packet.
+	// ----- Header Packet Detection -----
 	var infoField, payload []byte
-	// For a header packet, the info field ends after "0001" plus a colon.
+	// Check if this is a header packet by verifying that bytes 23-27 equal "0001"
 	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
 		idx := bytes.IndexByte(infoAndPayload[27:], ':')
 		if idx == -1 {
 			return nil
 		}
 		endIdx := 27 + idx + 1
-		if len(infoAndPayload) < endIdx {
-			return nil
-		}
 		infoField = infoAndPayload[:endIdx]
 		payload = infoAndPayload[endIdx:]
 	} else {
-		// For data packets we expect at least 32 bytes for the info field.
+		// Otherwise assume fixed-length splitting.
 		if len(infoAndPayload) < 32 {
 			return nil
 		}
 		infoField = infoAndPayload[:32]
 		payload = infoAndPayload[32:]
 	}
+	// -----------------------------------------
+
+	// For non-header packets, do NOT remove an extra byte.
+	var encodingMethod byte = 0
+
 	infoStr := string(infoField)
 	parts := strings.Split(infoStr, ":")
 	if len(parts) < 4 {
@@ -230,26 +264,17 @@ func parsePacket(packet []byte) *Packet {
 	var burstTo int
 	total := 0
 	if strings.Contains(seqBurst, "/") {
-		// Header packet.
+		// Header packet: sequence is always 1.
 		seq = 1
-		if len(seqBurst) < 8 {
-			return nil
+		if len(seqBurst) >= 8 {
+			burstPart := seqBurst[4:8]
+			b, err := strconv.ParseInt(burstPart, 16, 32)
+			if err != nil {
+				return nil
+			}
+			burstTo = int(b)
 		}
-		burstPart := seqBurst[4:8]
-		b, err := strconv.ParseInt(burstPart, 16, 32)
-		if err != nil {
-			return nil
-		}
-		burstTo = int(b)
-		spl := strings.Split(seqBurst, "/")
-		if len(spl) < 2 {
-			return nil
-		}
-		t, err := strconv.ParseInt(spl[1], 16, 32)
-		if err != nil {
-			return nil
-		}
-		total = int(t)
+		// total remains 0 and will be set from the header payload
 	} else {
 		if len(seqBurst) != 8 {
 			return nil
@@ -262,16 +287,29 @@ func parsePacket(packet []byte) *Packet {
 		seq = int(seqInt)
 		burstTo = int(burstInt)
 	}
+	// For header packets (seq==1), parse the header payload to extract the encoding method.
+	if seq == 1 {
+		headerFields := strings.Split(string(payload), "|")
+		if len(headerFields) >= 10 {
+			if val, err := strconv.Atoi(headerFields[7]); err == nil {
+				encodingMethod = byte(val)
+			}
+			if tot, err := strconv.Atoi(headerFields[9]); err == nil {
+				total = tot
+			}
+		}
+	}
 	return &Packet{
-		Type:     "data",
-		Sender:   sender,
-		Receiver: receiver,
-		FileID:   fileID,
-		Seq:      seq,
-		BurstTo:  burstTo,
-		Total:    total,
-		Payload:  payload,
-		RawInfo:  infoStr,
+		Type:           "data",
+		Sender:         sender,
+		Receiver:       receiver,
+		FileID:         fileID,
+		Seq:            seq,
+		BurstTo:        burstTo,
+		Total:          total,
+		Payload:        payload,
+		RawInfo:        infoStr,
+		EncodingMethod: encodingMethod,
 	}
 }
 
@@ -279,17 +317,15 @@ func parsePacket(packet []byte) *Packet {
 // KISSConnection Interface and Implementations (TCP and Serial)
 // -----------------------------------------------------------------------------
 
-// KISSConnection defines methods for sending and receiving KISS frames.
 type KISSConnection interface {
 	SendFrame(frame []byte) error
 	RecvData(timeout time.Duration) ([]byte, error)
 	Close() error
 }
 
-// TCPKISSConnection implements KISSConnection over TCP.
 type TCPKISSConnection struct {
 	conn     net.Conn
-	listener net.Listener // for server mode
+	listener net.Listener // used in server mode
 	isServer bool
 	lock     sync.Mutex
 }
@@ -354,7 +390,6 @@ func (t *TCPKISSConnection) Close() error {
 	return nil
 }
 
-// SerialKISSConnection implements KISSConnection over a serial port.
 type SerialKISSConnection struct {
 	ser  *serial.Port
 	lock sync.Mutex
@@ -449,42 +484,39 @@ func (fr *FrameReader) Stop() {
 // -----------------------------------------------------------------------------
 
 // Transfer holds header information and progress for a file transfer.
+// TimeoutSeconds is now an int and EncodingMethod is new.
 type Transfer struct {
 	Sender         string
 	Receiver       string
 	FileID         string
 	Filename       string
-	TotalPackets   int       // Total packets (including header)
-	LastSeq        int       // Highest sequence number seen
+	TotalPackets   int             // Total packets (including header)
+	LastSeq        int             // Highest sequence number seen
 	StartTime      time.Time
-	TimeoutSeconds float64   // Timeout value (from header)
-	FinAckTime     time.Time // Time at which FIN-ACK was received; zero if not received
+	TimeoutSeconds int             // Timeout value (from header, now an integer)
+	FinAckTime     time.Time       // Time at which FIN-ACK was received; zero if not received
+	PacketData     map[int][]byte  // Map of sequence number to payload (data packets only)
+	EncodingMethod byte            // new: 0 = binary, 1 = base64
+	Compress       bool            // Whether file was compressed
+	FileSaved      bool            // File saved flag
 }
 
 var (
-	// transfers maps a canonical key to its Transfer record.
 	transfers     = make(map[string]*Transfer)
 	transfersLock sync.Mutex
-
-	// allowedCalls holds the allowed callsigns (uppercase).
-	allowedCalls = make(map[string]bool)
+	allowedCalls  = make(map[string]bool)
 )
 
 // -----------------------------------------------------------------------------
-// Global Command‑Line Options
+// Global Command-Line Options
 // -----------------------------------------------------------------------------
 
-// TNC1 options
 var (
 	tnc1ConnType   = flag.String("tnc1-connection-type", "tcp", "Connection type for TNC1: tcp or serial")
 	tnc1Host       = flag.String("tnc1-host", "127.0.0.1", "TCP host for TNC1")
 	tnc1Port       = flag.Int("tnc1-port", 9001, "TCP port for TNC1")
 	tnc1SerialPort = flag.String("tnc1-serial-port", "", "Serial port for TNC1 (e.g., COM3 or /dev/ttyUSB0)")
 	tnc1Baud       = flag.Int("tnc1-baud", 115200, "Baud rate for TNC1 serial connection")
-)
-
-// TNC2 options
-var (
 	tnc2ConnType   = flag.String("tnc2-connection-type", "tcp", "Connection type for TNC2: tcp or serial")
 	tnc2Host       = flag.String("tnc2-host", "127.0.0.1", "TCP host for TNC2")
 	tnc2Port       = flag.Int("tnc2-port", 9002, "TCP port for TNC2")
@@ -492,36 +524,29 @@ var (
 	tnc2Baud       = flag.Int("tnc2-baud", 115200, "Baud rate for TNC2 serial connection")
 )
 
-// Allowed callsigns option (comma‑delimited).
 var callsigns = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns")
 var debug = flag.Bool("debug", false, "Enable debug logging")
+var saveFiles = flag.Bool("save-files", false, "Save all files seen by the proxy (prepending <SENDER>_<RECEIVER>_ to filename)")
 
 // -----------------------------------------------------------------------------
 // Packet Processing and Forwarding Logic
 // -----------------------------------------------------------------------------
 
-// processAndForwardPacket examines a raw packet (already unescaped) from one TNC,
-// validates header packets, tracks transfer progress, and forwards the packet
-// to the destination connection if allowed. The "direction" string (e.g., "TNC1->TNC2")
-// is used for logging. Every log message includes the fileID and sender/receiver.
 func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction string) {
 	packet := parsePacket(pkt)
 	if packet == nil {
-           if *debug {
-		log.Printf("[%s] [FileID: <unknown>] [From: <unknown> To: <unknown>] Could not parse packet.", direction)
-            }
+		if *debug {
+			log.Printf("[%s] [FileID: <unknown>] [From: <unknown> To: <unknown>] Could not parse packet.", direction)
+		}
 		return
 	}
 
-	// Use canonical key to be independent of direction.
 	key := canonicalKey(packet.Sender, packet.Receiver, packet.FileID)
 
-	// Before processing, check if a transfer exists and if a FIN-ACK was received.
 	transfersLock.Lock()
 	transfer, exists := transfers[key]
 	if exists && !transfer.FinAckTime.IsZero() {
-		// If the FIN-ACK was received, forward packets until timeout expires.
-		if time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds*float64(time.Second)) {
+		if time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds)*time.Second {
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping packet.", direction, packet.FileID, packet.Sender, packet.Receiver)
 			delete(transfers, key)
 			transfersLock.Unlock()
@@ -530,7 +555,6 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 	}
 	transfersLock.Unlock()
 
-	// For non-ACK packets, ensure both sender and receiver are allowed.
 	if packet.Type != "ack" {
 		srcAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Sender))]
 		dstAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Receiver))]
@@ -540,23 +564,19 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 		}
 	}
 
-	// Process ACK packets.
 	if packet.Type == "ack" {
 		transfersLock.Lock()
 		transfer, exists := transfers[key]
 		if exists {
-			// If this ACK contains FIN-ACK, mark the transfer with the current time
-			// (if not already set) but do not remove it immediately.
 			if strings.Contains(packet.Ack, "FIN-ACK") {
 				if transfer.FinAckTime.IsZero() {
 					transfer.FinAckTime = time.Now()
-					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Received FIN-ACK for file %s. Transfer complete. Continuing for timeout period (%.2f sec).", direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename, transfer.TimeoutSeconds)
+					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Received FIN-ACK for file %s. Transfer complete. Continuing for timeout period (%d sec).", direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename, transfer.TimeoutSeconds)
 				} else {
 					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Re-received FIN-ACK for file %s.", direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename)
 				}
 			} else {
-				// For normal ACK packets, if the transfer is in FIN-ACK state, check timeout.
-				if !transfer.FinAckTime.IsZero() && time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds*float64(time.Second)) {
+				if !transfer.FinAckTime.IsZero() && time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds)*time.Second {
 					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping ACK packet.", direction, packet.FileID, packet.Sender, packet.Receiver)
 					delete(transfers, key)
 					transfersLock.Unlock()
@@ -579,13 +599,15 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 
 	// Process header packets (seq==1).
 	if packet.Seq == 1 {
+		// Use the header payload as sent by the sender.
 		headerStr := string(packet.Payload)
 		fields := strings.Split(headerStr, "|")
-		if len(fields) < 9 {
+		if len(fields) < 10 {
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping header packet: invalid header (not enough fields)", direction, packet.FileID, packet.Sender, packet.Receiver)
 			return
 		}
-		timeoutSec, err := strconv.ParseFloat(fields[0], 64)
+		// Parse header fields.
+		timeoutSec, err := strconv.Atoi(fields[0])
 		if err != nil {
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid timeout seconds in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
@@ -607,23 +629,35 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 			return
 		}
 		md5Hash := fields[5]
-		compressFlag := fields[7]
-		totalPackets, err := strconv.Atoi(fields[8])
+		encodingMethodVal, err := strconv.Atoi(fields[7])
+		if err != nil {
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid encoding method in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			return
+		}
+		compFlag := fields[8]
+		totalPackets, err := strconv.Atoi(fields[9])
 		if err != nil {
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid total packets in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
 		}
-		compress := compressFlag == "1"
+		compress := compFlag == "1"
 
-		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Received HEADER packet:", direction, packet.FileID, packet.Sender, packet.Receiver)
+		var encStr string = "binary"
+		if encodingMethodVal == 1 {
+			encStr = "base64"
+		}
+
+		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Received HEADER packet:",
+			direction, packet.FileID, packet.Sender, packet.Receiver)
 		log.Printf("           Filename       : %s", filename)
-		log.Printf("           Timeout Secs   : %f", timeoutSec)
+		log.Printf("           Timeout Secs   : %d", timeoutSec)
 		log.Printf("           Timeout Retries: %d", timeoutRetries)
 		log.Printf("           Orig Size      : %d", origSize)
 		log.Printf("           Comp Size      : %d", compSize)
 		log.Printf("           MD5            : %s", md5Hash)
 		log.Printf("           Compression    : %v", compress)
 		log.Printf("           Total Packets  : %d", totalPackets)
+		log.Printf("           Encoding Method: %s", encStr)
 
 		transfersLock.Lock()
 		transfers[key] = &Transfer{
@@ -635,14 +669,20 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 			LastSeq:        1,
 			StartTime:      time.Now(),
 			TimeoutSeconds: timeoutSec,
-			FinAckTime:     time.Time{}, // zero value
+			FinAckTime:     time.Time{},
+			PacketData:     make(map[int][]byte),
+			EncodingMethod: byte(encodingMethodVal),
+			Compress:       compress,
+			FileSaved:      false,
 		}
 		transfersLock.Unlock()
 
-		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Forwarding HEADER packet for file %s", direction, packet.FileID, packet.Sender, packet.Receiver, filename)
+		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Forwarding HEADER packet for file %s",
+			direction, packet.FileID, packet.Sender, packet.Receiver, filename)
 		frame := buildKISSFrame(pkt)
 		if err := dstConn.SendFrame(frame); err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Error forwarding HEADER packet: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Error forwarding HEADER packet: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 		}
 		return
 	}
@@ -652,14 +692,15 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 	transfer, exists = transfers[key]
 	transfersLock.Unlock()
 	if !exists {
-		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping data packet seq %d: header not seen", direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
+		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping data packet seq %d: header not seen",
+			direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
 		return
 	}
 
-	// If FIN-ACK was already received, ensure we are still within the timeout period.
 	if !transfer.FinAckTime.IsZero() {
-		if time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds*float64(time.Second)) {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping data packet seq %d.", direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
+		if time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds)*time.Second {
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping data packet seq %d.",
+				direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
 			transfersLock.Lock()
 			delete(transfers, key)
 			transfersLock.Unlock()
@@ -670,16 +711,101 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 	if packet.Seq > transfer.LastSeq {
 		transfer.LastSeq = packet.Seq
 		progress := float64(packet.Seq-1) / float64(transfer.TotalPackets-1) * 100.0
-		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer progress for file %s: packet %d of %d (%.1f%%)", direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename, packet.Seq, transfer.TotalPackets, progress)
+		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer progress for file %s: packet %d of %d (%.1f%%)",
+			direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename, packet.Seq, transfer.TotalPackets, progress)
 		if packet.Seq == transfer.TotalPackets {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] All data packets received for file %s; waiting for FIN-ACK.", direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] All data packets received for file %s; waiting for FIN-ACK.",
+				direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename)
 		}
 	}
 
-	log.Printf("[%s] [FileID: %s] [From: %s To: %s] Forwarding data packet seq %d", direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
+	if *saveFiles {
+		transfersLock.Lock()
+		if transfer.PacketData == nil {
+			transfer.PacketData = make(map[int][]byte)
+		}
+		if _, exists := transfer.PacketData[packet.Seq]; !exists {
+			transfer.PacketData[packet.Seq] = append([]byte(nil), packet.Payload...)
+		}
+		complete := (len(transfer.PacketData) == (transfer.TotalPackets - 1))
+		alreadySaved := transfer.FileSaved
+		transfersLock.Unlock()
+
+		if complete && !alreadySaved {
+			var buf bytes.Buffer
+			for i := 2; i <= transfer.TotalPackets; i++ {
+				data, ok := transfer.PacketData[i]
+				if !ok {
+					log.Printf("[%s] [FileID: %s] Missing packet seq %d; cannot reassemble file.",
+						direction, packet.FileID, i)
+					return
+				}
+				if transfer.EncodingMethod == 1 {
+					decoded, err := ioutil.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(data)))
+					if err != nil {
+						log.Printf("[%s] [FileID: %s] Error decoding base64 on packet seq %d: %v",
+							direction, packet.FileID, i, err)
+						return
+					}
+					buf.Write(decoded)
+				} else {
+					buf.Write(data)
+				}
+			}
+			fileData := buf.Bytes()
+			if transfer.Compress {
+				b := bytes.NewReader(fileData)
+				zr, err := zlib.NewReader(b)
+				if err != nil {
+					log.Printf("[%s] [FileID: %s] Error decompressing file: %v", direction, packet.FileID, err)
+					return
+				}
+				decompressed, err := ioutil.ReadAll(zr)
+				zr.Close()
+				if err != nil {
+					log.Printf("[%s] [FileID: %s] Error reading decompressed data: %v", direction, packet.FileID, err)
+					return
+				}
+				fileData = decompressed
+			}
+			newFilename := fmt.Sprintf("%s_%s_%s", strings.ToUpper(transfer.Sender), strings.ToUpper(transfer.Receiver), transfer.Filename)
+			finalFilename := newFilename
+			if _, err := os.Stat(finalFilename); err == nil {
+				extIndex := strings.LastIndex(newFilename, ".")
+				var base, ext string
+				if extIndex != -1 {
+					base = newFilename[:extIndex]
+					ext = newFilename[extIndex:]
+				} else {
+					base = newFilename
+					ext = ""
+				}
+				for i := 1; ; i++ {
+					candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+					if _, err := os.Stat(candidate); os.IsNotExist(err) {
+						finalFilename = candidate
+						break
+					}
+				}
+			}
+			err := ioutil.WriteFile(finalFilename, fileData, 0644)
+			if err != nil {
+				log.Printf("[%s] [FileID: %s] Error saving file %s: %v", direction, packet.FileID, finalFilename, err)
+			} else {
+				log.Printf("[%s] [FileID: %s] Saved file as %s", direction, packet.FileID, finalFilename)
+			}
+			transfersLock.Lock()
+			transfer.FileSaved = true
+			transfersLock.Unlock()
+		}
+	}
+
+	log.Printf("[%s] [FileID: %s] [From: %s To: %s] Forwarding data packet seq %d",
+		direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
 	frame := buildKISSFrame(pkt)
 	if err := dstConn.SendFrame(frame); err != nil {
-		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Error forwarding data packet: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Error forwarding data packet: %v",
+			direction, packet.FileID, packet.Sender, packet.Receiver, err)
 	}
 }
 
@@ -694,7 +820,6 @@ func main() {
 		log.Fatalf("The -callsigns option is required.")
 	}
 
-	// Build allowed callsigns set (uppercase).
 	for _, s := range strings.Split(*callsigns, ",") {
 		s = strings.ToUpper(strings.TrimSpace(s))
 		if s != "" {
@@ -703,7 +828,6 @@ func main() {
 	}
 	log.Printf("Allowed callsigns: %v", allowedCalls)
 
-	// Create TNC1 connection.
 	var tnc1Conn KISSConnection
 	var err error
 	switch strings.ToLower(*tnc1ConnType) {
@@ -724,7 +848,6 @@ func main() {
 		log.Fatalf("Invalid TNC1 connection type: %s", *tnc1ConnType)
 	}
 
-	// Create TNC2 connection.
 	var tnc2Conn KISSConnection
 	switch strings.ToLower(*tnc2ConnType) {
 	case "tcp":
@@ -744,30 +867,25 @@ func main() {
 		log.Fatalf("Invalid TNC2 connection type: %s", *tnc2ConnType)
 	}
 
-	// Create channels to receive unescaped packets from each TNC.
 	tnc1Chan := make(chan []byte, 100)
 	tnc2Chan := make(chan []byte, 100)
 
-	// Start FrameReaders on both connections.
 	fr1 := NewFrameReader(tnc1Conn, tnc1Chan)
 	fr2 := NewFrameReader(tnc2Conn, tnc2Chan)
 	go fr1.Run()
 	go fr2.Run()
 
-	// Forward packets from TNC1 to TNC2.
 	go func() {
 		for pkt := range tnc1Chan {
 			processAndForwardPacket(pkt, tnc2Conn, "TNC1->TNC2")
 		}
 	}()
 
-	// Forward packets from TNC2 to TNC1.
 	go func() {
 		for pkt := range tnc2Chan {
 			processAndForwardPacket(pkt, tnc1Conn, "TNC2->TNC1")
 		}
 	}()
 
-	// Block forever.
 	select {}
 }

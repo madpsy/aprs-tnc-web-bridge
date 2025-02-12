@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/md5"
-	"encoding/base64" // <-- NEW: Import base64
+	"encoding/base64" // remains for Base64 decoding
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -139,12 +139,31 @@ func buildAX25Header(source, destination string) []byte {
 	return header
 }
 
+// ---------------------
+// Packet Parsing
+// ---------------------
+
+// Packet represents a parsed data or ACK packet.
+type Packet struct {
+	Type           string // "data" or "ack"
+	Sender         string
+	Receiver       string
+	FileID         string
+	Seq            int
+	BurstTo        int
+	Total          int    // For header packets (seq==1), total number of data packets.
+	Payload        []byte // Binary payload.
+	RawInfo        string // The decoded info field.
+	Ack            string // For ACK packets.
+	EncodingMethod byte   // 0 = binary, 1 = base64 (only set in header packet)
+}
+
 // parsePacket parses an unescaped packet.
 func parsePacket(packet []byte) *Packet {
 	if len(packet) < 16 {
 		return nil
 	}
-	// Skip the first 16 bytes (AX.25 header) and then decode info.
+	// Skip the first 16 bytes (AX.25 header)
 	infoAndPayload := packet[16:]
 	// Try to detect an ACK packet
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
@@ -160,12 +179,8 @@ func parsePacket(packet []byte) *Packet {
 			}
 		}
 	}
-	// Assume data packet otherwise.
-	if len(infoAndPayload) < 32 {
-		return nil
-	}
 	var infoField, payload []byte
-	// For header packets (seq==1), info field ends with a colon after "0001"
+	// For header packets (seq==1), the info field ends with a colon after "0001"
 	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
 		idx := bytes.IndexByte(infoAndPayload[27:], ':')
 		if idx == -1 {
@@ -173,9 +188,13 @@ func parsePacket(packet []byte) *Packet {
 		}
 		endIdx := 27 + idx + 1
 		infoField = infoAndPayload[:endIdx]
+		// For header packets, the sender embeds the encoding method inside the header payload.
 		payload = infoAndPayload[endIdx:]
 	} else {
-		// For data packets: fixed info field length.
+		// For data packets: fixed info field length is exactly 32 bytes.
+		if len(infoAndPayload) < 32 {
+			return nil
+		}
 		infoField = infoAndPayload[:32]
 		payload = infoAndPayload[32:]
 	}
@@ -227,16 +246,27 @@ func parsePacket(packet []byte) *Packet {
 		seq = int(seqInt)
 		burstTo = int(burstInt)
 	}
+	// For header packets (seq==1), parse the header payload to extract the encoding method.
+	var encodingMethod byte = 0
+	if seq == 1 {
+		headerFields := strings.Split(string(payload), "|")
+		if len(headerFields) >= 10 {
+			if val, err := strconv.Atoi(headerFields[7]); err == nil {
+				encodingMethod = byte(val)
+			}
+		}
+	}
 	return &Packet{
-		Type:     "data",
-		Sender:   sender,
-		Receiver: receiver,
-		FileID:   fileID,
-		Seq:      seq,
-		BurstTo:  burstTo,
-		Total:    total,
-		Payload:  payload,
-		RawInfo:  infoStr,
+		Type:           "data",
+		Sender:         sender,
+		Receiver:       receiver,
+		FileID:         fileID,
+		Seq:            seq,
+		BurstTo:        burstTo,
+		Total:          total,
+		Payload:        payload,
+		RawInfo:        infoStr,
+		EncodingMethod: encodingMethod,
 	}
 }
 
@@ -245,24 +275,6 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// ---------------------
-// Packet Data Structure
-// ---------------------
-
-// Packet represents a parsed data or ACK packet.
-type Packet struct {
-	Type     string // "data" or "ack"
-	Sender   string
-	Receiver string
-	FileID   string
-	Seq      int
-	BurstTo  int
-	Total    int    // For header packets (seq==1), total number of data packets.
-	Payload  []byte // Binary payload.
-	RawInfo  string // The decoded info field.
-	Ack      string // For ACK packets.
 }
 
 // ---------------------
@@ -459,15 +471,16 @@ type Transfer struct {
 	LastReceived     time.Time
 	LastAckSent      time.Time
 	RetryCount       int
-	TimeoutSeconds   float64
+	TimeoutSeconds   int     // now an integer
 	TimeoutRetries   int
-	RetryInterval    float64
+	RetryInterval    float64 // in seconds
 	Total            int
 	StartTime        time.Time
 	BytesReceived    int
 	DuplicateCount   int
 	BurstBytes       int
 	LastBurstAckTime time.Time
+	EncodingMethod   byte // 0 = binary, 1 = Base64 (set from header)
 }
 
 // computeCumulativeAck computes the highest contiguous sequence number received.
@@ -500,7 +513,7 @@ func computeCumulativeAck(t *Transfer) string {
 // sendAck builds and sends an ACK packet.
 func sendAck(conn KISSConnection, myCallsign, remote, fileID, ackStr string) {
 	info := fmt.Sprintf("%s>%s:%s:ACK:%s", padCallsign(myCallsign), padCallsign(remote), fileID, ackStr)
-	ackPkt := append(buildAX25Header(myCallsign, padCallsign(remote)), []byte(info)...)
+	ackPkt := append(buildAX25Header(myCallsign, remote), []byte(info)...)
 	frame := buildKISSFrame(ackPkt)
 	conn.SendFrame(frame)
 	log.Printf("Sent ACK: %s for file %s", ackStr, fileID)
@@ -520,13 +533,11 @@ type Arguments struct {
 	SerialPort     string  // Serial port (e.g. COM3 or /dev/ttyUSB0)
 	Baud           int     // Baud rate for serial
 	OneFile        bool    // Exit after successfully receiving one file
-
-	// New options:
 	Execute        string  // If received file's name matches this, execute it with bash instead of saving.
-	Replace        bool    // If specified, overwrite existing files if a new file is received with the same name.
+	Replace        bool    // Overwrite existing files if a new file is received with the same name.
 	OnlyFrom       string  // Only accept files from the specified callsign.
 	ExecuteTimeout float64 // Maximum seconds to allow executed file to run (0 means unlimited)
-	Base64         bool    // <-- NEW: If true, expect the file's data payload to be base64 encoded.
+	// Note: The receiver no longer has a Base64 flag; it determines encoding via the header.
 }
 
 func parseArguments() *Arguments {
@@ -540,11 +551,9 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial")
 	flag.BoolVar(&args.OneFile, "one-file", false, "Exit after successfully receiving one file")
 	flag.StringVar(&args.Execute, "execute", "", "If received file's name matches this, execute it with bash instead of saving")
-	flag.BoolVar(&args.Replace, "replace", false, "If specified, overwrite existing files if a new file is received with the same name")
+	flag.BoolVar(&args.Replace, "replace", false, "Overwrite existing files if a new file is received with the same name")
 	flag.StringVar(&args.OnlyFrom, "only-from", "", "Only accept files from the specified callsign")
-	// New flags:
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
-	flag.BoolVar(&args.Base64, "base64", false, "Expect the file's data payload to be base64 encoded") // <-- NEW
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -577,7 +586,6 @@ func receiverMain(args *Arguments) {
 	frameChan := make(chan []byte, 100)
 	reader := NewFrameReader(conn, frameChan)
 	go reader.Run()
-
 	log.Printf("Receiver started. My callsign: %s", strings.ToUpper(args.MyCallsign))
 	transfers := make(map[string]*Transfer)
 
@@ -604,15 +612,6 @@ func receiverMain(args *Arguments) {
 				log.Printf("Packet intended for %s, not me (%s). Ignoring.", receiverStr, localCS)
 				continue
 			}
-			// New: If -only-from is specified, only accept packets from that sender.
-			if args.OnlyFrom != "" {
-				allowedSender := strings.ToUpper(strings.TrimSpace(args.OnlyFrom))
-				if strings.ToUpper(strings.TrimSpace(sender)) != allowedSender {
-					log.Printf("Ignoring packet from %s (only accepting files from %s).", sender, allowedSender)
-					continue
-				}
-			}
-			// If this is the first (header) packet for this transfer…
 			if _, ok := transfers[fileID]; !ok {
 				if seq != 1 {
 					log.Printf("Received non-header packet (seq=%d) for unknown transfer %s. Ignoring.", seq, fileID)
@@ -620,21 +619,20 @@ func receiverMain(args *Arguments) {
 				}
 				headerPayload := parsed.Payload
 				headerInfo := string(headerPayload)
-				// The header info is expected to have at least 9 pipe‑delimited parts:
-				// timeout_seconds|timeout_retries|filename|origSize|compSize|md5|fileID|compressFlag|totalPackets
 				parts := strings.Split(headerInfo, "|")
-				if len(parts) < 9 {
+				if len(parts) < 10 {
 					log.Printf("Invalid header info – ignoring transfer.")
 					continue
 				}
-				transferTimeoutSeconds, _ := strconv.ParseFloat(parts[0], 64)
+				transferTimeoutSeconds, _ := strconv.Atoi(parts[0])
 				transferTimeoutRetries, _ := strconv.Atoi(parts[1])
 				filename := parts[2]
 				origSize, _ := strconv.Atoi(parts[3])
 				compSize, _ := strconv.Atoi(parts[4])
 				md5Hash := parts[5]
-				compFlag := parts[7]
-				totalPackets, _ := strconv.Atoi(parts[8])
+				encodingMethodVal, _ := strconv.Atoi(parts[7])
+				compFlag := parts[8]
+				totalPackets, _ := strconv.Atoi(parts[9])
 				compress := (compFlag == "1")
 				transfers[fileID] = &Transfer{
 					Sender:           sender,
@@ -650,13 +648,14 @@ func receiverMain(args *Arguments) {
 					RetryCount:       0,
 					TimeoutSeconds:   transferTimeoutSeconds,
 					TimeoutRetries:   transferTimeoutRetries,
-					RetryInterval:    transferTimeoutSeconds,
+					RetryInterval:    float64(transferTimeoutSeconds),
 					Total:            totalPackets,
 					StartTime:        time.Now(),
 					BytesReceived:    0,
 					DuplicateCount:   0,
 					BurstBytes:       0,
 					LastBurstAckTime: time.Now(),
+					EncodingMethod:   byte(encodingMethodVal),
 				}
 				log.Printf("Started transfer from %s (File: %s, ID: %s)", sender, filename, fileID)
 				log.Printf("Total packets required (including header): %d", totalPackets)
@@ -665,7 +664,7 @@ func receiverMain(args *Arguments) {
 			}
 			transfer := transfers[fileID]
 			transfer.LastReceived = time.Now()
-			transfer.RetryInterval = transfer.TimeoutSeconds
+			transfer.RetryInterval = float64(transfer.TimeoutSeconds)
 			if parsed.BurstTo > transfer.BurstTo {
 				transfer.BurstTo = parsed.BurstTo
 			}
@@ -677,7 +676,6 @@ func receiverMain(args *Arguments) {
 			transfer.Packets[seq] = parsed.Payload
 			transfer.BytesReceived += len(parsed.Payload)
 			transfer.BurstBytes += len(parsed.Payload)
-			// When the last packet of the current burst is received, send a cumulative ACK.
 			if transfer.BurstTo != 0 && seq == transfer.BurstTo {
 				now := time.Now()
 				burstDuration := now.Sub(transfer.LastBurstAckTime).Seconds()
@@ -696,13 +694,12 @@ func receiverMain(args *Arguments) {
 				log.Printf("--------------")
 				ackRange := computeCumulativeAck(transfer)
 				sendAck(conn, args.MyCallsign, sender, fileID, ackRange)
-				transfer.LastAckSent = now
+				transfer.LastAckSent = time.Now()
 				transfer.BurstBytes = 0
 				transfer.LastBurstAckTime = now
 				transfer.RetryCount = 0
-				transfer.RetryInterval = transfer.TimeoutSeconds
+				transfer.RetryInterval = float64(transfer.TimeoutSeconds)
 			}
-			// Check if all packets have been received (header + data).
 			if transfer.Total > 0 && len(transfer.Packets) == transfer.Total-1 {
 				overallElapsed := time.Since(transfer.StartTime).Seconds()
 				overallRate := float64(transfer.BytesReceived) / overallElapsed
@@ -711,7 +708,7 @@ func receiverMain(args *Arguments) {
 					transfer.BytesReceived, overallElapsed, overallRate, transfer.DuplicateCount)
 				log.Printf("===============================================")
 				log.Printf("Transfer complete for file %s. Reassembling file …", fileID)
-				var dataParts [][]byte
+				var fileDataBuffer bytes.Buffer
 				complete := true
 				for i := 2; i <= transfer.Total; i++ {
 					part, ok := transfer.Packets[i]
@@ -720,25 +717,23 @@ func receiverMain(args *Arguments) {
 						complete = false
 						break
 					}
-					dataParts = append(dataParts, part)
+					// Use the encoding method from the header.
+					if transfer.EncodingMethod == 1 {
+						decoded, err := base64.StdEncoding.DecodeString(string(part))
+						if err != nil {
+							log.Printf("Error decoding base64 for packet %d: %v", i, err)
+							complete = false
+							break
+						}
+						fileDataBuffer.Write(decoded)
+					} else {
+						fileDataBuffer.Write(part)
+					}
 				}
 				if !complete {
 					continue
 				}
-				// Join the received packets.
-				fullData := bytes.Join(dataParts, []byte{})
-
-				// NEW: If the --base64 flag is set, decode the joined data from Base64.
-				if args.Base64 {
-					decodedData, err := base64.StdEncoding.DecodeString(string(fullData))
-					if err != nil {
-						log.Printf("Base64 decode error: %v", err)
-						continue
-					}
-					fullData = decodedData
-				}
-
-				// If the file is compressed, decompress it.
+				fullData := fileDataBuffer.Bytes()
 				if transfer.Compress {
 					b := bytes.NewReader(fullData)
 					zr, err := zlib.NewReader(b)
@@ -761,8 +756,6 @@ func receiverMain(args *Arguments) {
 				} else {
 					log.Printf("Checksum mismatch! (Expected: %s, Got: %s)", transfer.MD5, calculatedMD5Str)
 				}
-
-				// New behavior: execute file if the received filename matches the -execute option.
 				if args.Execute != "" && transfer.Filename == args.Execute {
 					log.Printf("Received file %s matches -execute option; executing file instead of saving.", transfer.Filename)
 					tmpFile, err := ioutil.TempFile("", "rxexec-")
@@ -771,14 +764,13 @@ func receiverMain(args *Arguments) {
 						continue
 					}
 					tmpName := tmpFile.Name()
-					tmpFile.Close() // Close the file so we can write to it.
+					tmpFile.Close()
 					err = ioutil.WriteFile(tmpName, fullData, 0755)
 					if err != nil {
 						log.Printf("Error writing to temporary file: %v", err)
 						os.Remove(tmpName)
 						continue
 					}
-					// Execute the file in its own goroutine so as not to block the ACK process.
 					log.Printf("Executing file %s asynchronously", tmpName)
 					cmd := exec.Command("bash", tmpName)
 					cmd.Stdout = os.Stdout
@@ -789,7 +781,6 @@ func receiverMain(args *Arguments) {
 						os.Remove(tmpName)
 						continue
 					}
-					// Use the execute-timeout if set.
 					go func(tmpName string, cmd *exec.Cmd, timeout float64) {
 						if timeout > 0 {
 							log.Printf("Execution timeout is set to %.2f seconds", timeout)
@@ -804,7 +795,7 @@ func receiverMain(args *Arguments) {
 								} else {
 									log.Printf("Asynchronous execution finished successfully.")
 								}
-							case <-time.After(time.Duration(timeout * float64(time.Second))):
+							case <-time.After(time.Duration(timeout) * time.Second):
 								log.Printf("Execution of file %s exceeded timeout of %.2f seconds. Killing process.", tmpName, timeout)
 								if err := cmd.Process.Kill(); err != nil {
 									log.Printf("Failed to kill process: %v", err)
@@ -825,7 +816,6 @@ func receiverMain(args *Arguments) {
 						os.Remove(tmpName)
 					}(tmpName, cmd, args.ExecuteTimeout)
 				} else {
-					// Save file normally.
 					var outname string
 					if args.Replace {
 						outname = transfer.Filename
@@ -853,7 +843,6 @@ func receiverMain(args *Arguments) {
 						log.Printf("Saved received file as %s", outname)
 					}
 				}
-
 				log.Printf("Waiting for sender's final confirmation (FIN-ACK)...")
 				var finalConfirmation string
 				retries := 0
@@ -865,7 +854,7 @@ func receiverMain(args *Arguments) {
 							finalConfirmation = parsedAck.Ack
 							log.Printf("Received sender's final confirmation FIN-ACK.")
 						}
-					case <-time.After(time.Duration(transfer.TimeoutSeconds * float64(time.Second))):
+					case <-time.After(time.Duration(transfer.TimeoutSeconds) * time.Second):
 						retries++
 						log.Printf("Timeout waiting for final confirmation (FIN-ACK) (retry %d/%d). Resending cumulative ACK.", retries, transfer.TimeoutRetries)
 						ackRange := computeCumulativeAck(transfer)
@@ -887,7 +876,6 @@ func receiverMain(args *Arguments) {
 			}
 		case <-time.After(500 * time.Millisecond):
 			now := time.Now()
-			// Check for transfers that have become inactive and re-send ACKs if necessary.
 			for fid, transfer := range transfers {
 				lastEvent := transfer.LastReceived
 				if transfer.LastAckSent.After(lastEvent) {

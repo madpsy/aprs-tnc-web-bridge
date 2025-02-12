@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/md5"
-	"encoding/base64" // <<-- new import
+	"encoding/base64" // <<-- new import (already present)
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -144,19 +144,24 @@ func buildAX25Header(source, destination string) []byte {
 // buildPacket builds a packet for sending.
 // For the header packet (seq==1), the info field contains total packet count etc.
 // For data packets (seq>=2), a different info field format is used.
-func buildPacket(sender, receiver string, seq, totalDataPackets int, payload []byte, fileID string, burstTo int) []byte {
+// <<-- Minimal change: the extra encodingMethod field is now not appended separately.
+func buildPacket(sender, receiver string, seq, totalDataPackets int, payload []byte, fileID string, burstTo int, encodingMethod byte) []byte {
 	sStr := padCallsign(sender)
 	rStr := padCallsign(receiver)
 	var info string
 	if seq == 1 {
 		totalHex := fmt.Sprintf("%04X", totalDataPackets)
+		// The header info field does NOT append an extra byte; the encoding method is included in the header string.
 		info = fmt.Sprintf("%s>%s:%s:0001%s/%s:", sStr, rStr, fileID, fmt.Sprintf("%04X", burstTo), totalHex)
 	} else {
 		info = fmt.Sprintf("%s>%s:%s:%s%s:", sStr, rStr, fileID, fmt.Sprintf("%04X", seq), fmt.Sprintf("%04X", burstTo))
 	}
 	infoBytes := []byte(info)
 	ax25 := buildAX25Header(sender, receiver)
-	return append(append(ax25, infoBytes...), payload...)
+	packet := append(ax25, infoBytes...)
+	// Do not append the encodingMethod separately.
+	packet = append(packet, payload...)
+	return packet
 }
 
 // generateFileID returns a two‑character random file ID.
@@ -174,16 +179,17 @@ func generateFileID() string {
 
 // Packet represents a parsed data or ACK packet.
 type Packet struct {
-	Type     string // "data" or "ack"
-	Sender   string
-	Receiver string
-	FileID   string
-	Seq      int
-	BurstTo  int
-	Total    int    // For header packets (seq==1), total number of data packets.
-	Payload  []byte // Binary payload.
-	RawInfo  string // The decoded info field.
-	Ack      string // For ACK packets.
+	Type           string // "data" or "ack"
+	Sender         string
+	Receiver       string
+	FileID         string
+	Seq            int
+	BurstTo        int
+	Total          int    // For header packets (seq==1), total number of data packets.
+	Payload        []byte // Binary payload.
+	RawInfo        string // The decoded info field.
+	Ack            string // For ACK packets.
+	EncodingMethod byte   // <<-- new field: 0=binary, 1=base64
 }
 
 // parsePacket parses an unescaped packet.
@@ -223,6 +229,8 @@ func parsePacket(packet []byte) *Packet {
 		infoField = infoAndPayload[:32]
 		payload = infoAndPayload[32:]
 	}
+	// <<-- New: For sender-only version the receiver doesn’t need to parse an extra encoding byte.
+	// (It is now embedded in the header string for seq==1.)
 	infoStr := string(infoField)
 	parts := strings.Split(infoStr, ":")
 	if len(parts) < 4 {
@@ -272,15 +280,16 @@ func parsePacket(packet []byte) *Packet {
 		burstTo = int(burstInt)
 	}
 	return &Packet{
-		Type:     "data",
-		Sender:   sender,
-		Receiver: receiver,
-		FileID:   fileID,
-		Seq:      seq,
-		BurstTo:  burstTo,
-		Total:    total,
-		Payload:  payload,
-		RawInfo:  infoStr,
+		Type:           "data",
+		Sender:         sender,
+		Receiver:       receiver,
+		FileID:         fileID,
+		Seq:            seq,
+		BurstTo:        burstTo,
+		Total:          total,
+		Payload:        payload,
+		RawInfo:        infoStr,
+		EncodingMethod: 0, // Not used on sender side
 	}
 }
 
@@ -502,7 +511,7 @@ type Arguments struct {
 	Baud                  int     // Baud rate for serial
 	File                  string  // File(s) to send (comma delimited)
 	Compress              bool    // Enable compression (default true)
-	TimeoutSeconds        float64 // Timeout in seconds (default 5 seconds)
+	TimeoutSeconds        int     // <<-- changed: Timeout in seconds now an integer (default 5)
 	TimeoutRetries        int     // Number of timeout retries (default 5)
 	FileDirectory         string  // Directory to monitor for files to send (mutually exclusive with -file)
 	FileDirectoryRetries  int     // Number of retries for sending a file from the directory (default 0)
@@ -526,9 +535,9 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.FileDirectoryRetries, "file-directory-retries", 0, "Number of retries for sending a file from the directory (default 0)")
 	flag.BoolVar(&args.FileDirectoryExisting, "file-directory-existing", false, "Queue existing files in the directory (default false)")
 	noCompress := flag.Bool("no-compress", false, "Disable compression")
-	flag.Float64Var(&args.TimeoutSeconds, "timeout-seconds", 5.0, "Timeout in seconds (default 5 seconds)")
+	// <<-- changed: use IntVar for timeout-seconds
+	flag.IntVar(&args.TimeoutSeconds, "timeout-seconds", 5, "Timeout in seconds (default 5 seconds)")
 	flag.IntVar(&args.TimeoutRetries, "timeout-retries", 5, "Number of timeout retries (default 5)")
-	// <<-- new flag:
 	flag.BoolVar(&args.Base64, "base64", false, "Encode file payload in base64 after compression")
 	flag.Parse()
 
@@ -589,10 +598,17 @@ func sendFile(args *Arguments) error {
 	dataPacketCount := int(math.Ceil(float64(len(finalData)) / float64(CHUNK_SIZE)))
 	totalIncludingHeader := dataPacketCount + 1
 
+	// Compute the encoding method value to be sent (0=binary, 1=base64)
+	var encodingMethod byte = 0
+	if args.Base64 {
+		encodingMethod = 1
+	}
+
 	// Build header string.
-	headerStr := fmt.Sprintf("%f|%d|%s|%d|%d|%s|%s|%d|%d",
+	// Note: TimeoutSeconds is now an integer and the encodingMethod field is added as a distinct delimited field.
+	headerStr := fmt.Sprintf("%d|%d|%s|%d|%d|%s|%s|%d|%d|%d",
 		args.TimeoutSeconds, args.TimeoutRetries, filepath.Base(args.File),
-		originalSize, compressedSize, md5Hash, fileID, boolToInt(args.Compress), totalIncludingHeader)
+		originalSize, compressedSize, md5Hash, fileID, encodingMethod, boolToInt(args.Compress), totalIncludingHeader)
 	headerPayload := []byte(headerStr)
 	log.Printf("File: %s (%d bytes)", args.File, originalSize)
 	log.Printf("Compressed to %d bytes, split into %d data packets (total packets including header: %d)", compressedSize, dataPacketCount, totalIncludingHeader)
@@ -665,11 +681,12 @@ func sendFile(args *Arguments) error {
 		}
 	}
 
+	// sendPacket now passes the encodingMethod to buildPacket.
 	sendPacket := func(seq int) int {
 		var burstTo int
 		if seq == 1 {
 			burstTo = 1
-			pkt := buildPacket(args.MyCallsign, args.ReceiverCallsign, seq, totalIncludingHeader-1, chunks[seq-1], fileID, burstTo)
+			pkt := buildPacket(args.MyCallsign, args.ReceiverCallsign, seq, totalIncludingHeader-1, chunks[seq-1], fileID, burstTo, encodingMethod)
 			frame := buildKISSFrame(pkt)
 			conn.SendFrame(frame)
 			log.Printf("Sent packet seq=%d, burst_to=%d.", seq, burstTo)
@@ -680,7 +697,7 @@ func sendFile(args *Arguments) error {
 			if burstTo > totalIncludingHeader {
 				burstTo = totalIncludingHeader
 			}
-			pkt := buildPacket(args.MyCallsign, args.ReceiverCallsign, seq, totalIncludingHeader-1, chunks[seq-1], fileID, burstTo)
+			pkt := buildPacket(args.MyCallsign, args.ReceiverCallsign, seq, totalIncludingHeader-1, chunks[seq-1], fileID, burstTo, encodingMethod)
 			frame := buildKISSFrame(pkt)
 			conn.SendFrame(frame)
 			log.Printf("Sent packet seq=%d, burst_to=%d.", seq, burstTo)
@@ -690,7 +707,7 @@ func sendFile(args *Arguments) error {
 
 	waitForAck := func(numPackets int, isHeader bool) string {
 		retries := 0
-		overallTimeout := time.Duration(float64(numPackets)*perPacketTimeout*float64(time.Second)) + time.Duration(args.TimeoutSeconds*float64(time.Second))
+		overallTimeout := time.Duration(numPackets)*time.Duration(perPacketTimeout*float64(time.Second)) + time.Duration(args.TimeoutSeconds)*time.Second
 		for retries < args.TimeoutRetries {
 			deadline := time.Now().Add(overallTimeout)
 			for time.Now().Before(deadline) {
@@ -713,7 +730,7 @@ func sendFile(args *Arguments) error {
 				log.Printf("Resending header packet (retry %d/%d).", retries, args.TimeoutRetries)
 				sendPacket(1)
 			}
-			overallTimeout = time.Duration(args.TimeoutSeconds*math.Pow(1.5, float64(retries)) * float64(time.Second))
+			overallTimeout = time.Duration(args.TimeoutSeconds*int(math.Pow(1.5, float64(retries)))) * time.Second
 		}
 		return ""
 	}
@@ -860,7 +877,7 @@ func sendFile(args *Arguments) error {
 	finalFrame := buildKISSFrame(finalConfirmationPkt)
 	conn.SendFrame(finalFrame)
 	log.Printf("Sent FIN-ACK after final cumulative ACK. Transfer fully completed.")
-	finalWaitPeriod := 1500*time.Millisecond + time.Duration(args.TimeoutSeconds*float64(time.Second))
+	finalWaitPeriod := 1500*time.Millisecond + time.Duration(args.TimeoutSeconds)*time.Second
 	log.Printf("Listening for re-transmitted ACK for %.2f seconds...", finalWaitPeriod.Seconds())
 	endTime := time.Now().Add(finalWaitPeriod)
 	for time.Now().Before(endTime) {
@@ -914,7 +931,7 @@ func main() {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
 
-	// If file-directory is specified, run in directory-monitoring mode.
+	// If file-directory is specified, run in directory‑monitoring mode.
 	if args.FileDirectory != "" {
 		// Create a channel to queue files.
 		fileQueue := make(chan string, 100)
