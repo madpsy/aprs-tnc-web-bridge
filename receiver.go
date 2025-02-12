@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/md5"
+	"encoding/base64" // <-- NEW: Import base64
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -525,6 +526,7 @@ type Arguments struct {
 	Replace        bool    // If specified, overwrite existing files if a new file is received with the same name.
 	OnlyFrom       string  // Only accept files from the specified callsign.
 	ExecuteTimeout float64 // Maximum seconds to allow executed file to run (0 means unlimited)
+	Base64         bool    // <-- NEW: If true, expect the file's data payload to be base64 encoded.
 }
 
 func parseArguments() *Arguments {
@@ -540,8 +542,9 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.Execute, "execute", "", "If received file's name matches this, execute it with bash instead of saving")
 	flag.BoolVar(&args.Replace, "replace", false, "If specified, overwrite existing files if a new file is received with the same name")
 	flag.StringVar(&args.OnlyFrom, "only-from", "", "Only accept files from the specified callsign")
-	// New flag: execute-timeout
+	// New flags:
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
+	flag.BoolVar(&args.Base64, "base64", false, "Expect the file's data payload to be base64 encoded") // <-- NEW
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -722,7 +725,20 @@ func receiverMain(args *Arguments) {
 				if !complete {
 					continue
 				}
+				// Join the received packets.
 				fullData := bytes.Join(dataParts, []byte{})
+
+				// NEW: If the --base64 flag is set, decode the joined data from Base64.
+				if args.Base64 {
+					decodedData, err := base64.StdEncoding.DecodeString(string(fullData))
+					if err != nil {
+						log.Printf("Base64 decode error: %v", err)
+						continue
+					}
+					fullData = decodedData
+				}
+
+				// If the file is compressed, decompress it.
 				if transfer.Compress {
 					b := bytes.NewReader(fullData)
 					zr, err := zlib.NewReader(b)

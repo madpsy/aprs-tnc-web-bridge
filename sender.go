@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/md5"
+	"encoding/base64" // <<-- new import
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -506,6 +507,7 @@ type Arguments struct {
 	FileDirectory         string  // Directory to monitor for files to send (mutually exclusive with -file)
 	FileDirectoryRetries  int     // Number of retries for sending a file from the directory (default 0)
 	FileDirectoryExisting bool    // When true, queue existing files in the directory (default false)
+	Base64                bool    // <<-- new field: when true, encode payload as Base64 after compression
 }
 
 func parseArguments() *Arguments {
@@ -526,6 +528,8 @@ func parseArguments() *Arguments {
 	noCompress := flag.Bool("no-compress", false, "Disable compression")
 	flag.Float64Var(&args.TimeoutSeconds, "timeout-seconds", 5.0, "Timeout in seconds (default 5 seconds)")
 	flag.IntVar(&args.TimeoutRetries, "timeout-retries", 5, "Number of timeout retries (default 5)")
+	// <<-- new flag:
+	flag.BoolVar(&args.Base64, "base64", false, "Encode file payload in base64 after compression")
 	flag.Parse()
 
 	args.Compress = !(*noCompress)
@@ -572,6 +576,11 @@ func sendFile(args *Arguments) error {
 		finalData = buf.Bytes()
 	} else {
 		finalData = fileData
+	}
+	// <<-- new: if the base64 flag is set, encode the payload in base64.
+	if args.Base64 {
+		encoded := base64.StdEncoding.EncodeToString(finalData)
+		finalData = []byte(encoded)
 	}
 	compressedSize := len(finalData)
 	md5sum := md5.Sum(fileData)
