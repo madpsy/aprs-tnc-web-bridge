@@ -733,19 +733,21 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 
 		if complete && !alreadySaved {
 			var buf bytes.Buffer
+			// Attempt to reassemble the file.
 			for i := 2; i <= transfer.TotalPackets; i++ {
 				data, ok := transfer.PacketData[i]
 				if !ok {
 					log.Printf("[%s] [FileID: %s] Missing packet seq %d; cannot reassemble file.",
 						direction, packet.FileID, i)
-					return
+					// Instead of aborting, skip file saving.
+					goto ForwardPacket
 				}
 				if transfer.EncodingMethod == 1 {
 					decoded, err := ioutil.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(data)))
 					if err != nil {
 						log.Printf("[%s] [FileID: %s] Error decoding base64 on packet seq %d: %v",
 							direction, packet.FileID, i, err)
-						return
+						goto ForwardPacket
 					}
 					buf.Write(decoded)
 				} else {
@@ -758,17 +760,17 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 				zr, err := zlib.NewReader(b)
 				if err != nil {
 					log.Printf("[%s] [FileID: %s] Error decompressing file: %v", direction, packet.FileID, err)
-					return
+					goto ForwardPacket
 				}
 				decompressed, err := ioutil.ReadAll(zr)
 				zr.Close()
 				if err != nil {
 					log.Printf("[%s] [FileID: %s] Error reading decompressed data: %v", direction, packet.FileID, err)
-					return
+					goto ForwardPacket
 				}
 				fileData = decompressed
 			}
-			newFilename := fmt.Sprintf("%s_%s_%s", strings.ToUpper(transfer.Sender), strings.ToUpper(transfer.Receiver), transfer.Filename)
+			newFilename := fmt.Sprintf("%s_%s_%s_%s", strings.ToUpper(transfer.Sender), strings.ToUpper(transfer.Receiver), transfer.FileID, transfer.Filename)
 			finalFilename := newFilename
 			if _, err := os.Stat(finalFilename); err == nil {
 				extIndex := strings.LastIndex(newFilename, ".")
@@ -800,6 +802,7 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 		}
 	}
 
+ForwardPacket:
 	log.Printf("[%s] [FileID: %s] [From: %s To: %s] Forwarding data packet seq %d",
 		direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
 	frame := buildKISSFrame(pkt)

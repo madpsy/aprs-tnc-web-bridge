@@ -664,7 +664,7 @@ func receiverMain(args *Arguments) {
 			}
 			transfer := transfers[fileID]
 			transfer.LastReceived = time.Now()
-			transfer.RetryInterval = float64(transfer.TimeoutSeconds)
+			transfer.RetryInterval = float64(transfer.TimeoutSeconds) + 1.5
 			if parsed.BurstTo > transfer.BurstTo {
 				transfer.BurstTo = parsed.BurstTo
 			}
