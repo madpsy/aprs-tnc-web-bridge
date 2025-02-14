@@ -16,9 +16,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/tarm/serial"
+	"go.bug.st/serial"
 )
 
 // -----------------------------------------------------------------------------
@@ -317,17 +318,29 @@ func parsePacket(packet []byte) *Packet {
 // KISSConnection Interface and Implementations (TCP and Serial)
 // -----------------------------------------------------------------------------
 
+// KISSConnection abstracts a connection that can send/receive KISS frames.
 type KISSConnection interface {
 	SendFrame(frame []byte) error
 	RecvData(timeout time.Duration) ([]byte, error)
 	Close() error
 }
 
+// connHolder is a small wrapper so that we never store a raw nil in the atomic value.
+type connHolder struct {
+	conn net.Conn
+}
+
+// TCPKISSConnection supports both client and server (reconnectable) modes.
 type TCPKISSConnection struct {
-	conn     net.Conn
-	listener net.Listener // used in server mode
-	isServer bool
-	lock     sync.Mutex
+	// For client mode:
+	conn net.Conn
+
+	// For server mode we use a listener and an atomic connection.
+	listener   net.Listener
+	atomicConn atomic.Value // stores *connHolder (never nil)
+	isServer   bool
+
+	lock sync.Mutex
 }
 
 func newTCPKISSConnection(host string, port int, isServer bool) (*TCPKISSConnection, error) {
@@ -339,13 +352,27 @@ func newTCPKISSConnection(host string, port int, isServer bool) (*TCPKISSConnect
 			return nil, err
 		}
 		tnc.listener = ln
+		// Initialize atomicConn with an empty holder.
+		tnc.atomicConn.Store(&connHolder{conn: nil})
 		log.Printf("[TCP Server] Listening on %s", addr)
-		conn, err := ln.Accept()
-		if err != nil {
-			return nil, err
-		}
-		tnc.conn = conn
-		log.Printf("[TCP Server] Accepted connection from %s", conn.RemoteAddr().String())
+		// Start background accept loop.
+		go func() {
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					log.Printf("Error accepting new connection on %s: %v", addr, err)
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				// If there is an existing connection, close it.
+				oldHolder := tnc.atomicConn.Load().(*connHolder)
+				if oldHolder.conn != nil {
+					oldHolder.conn.Close()
+				}
+				tnc.atomicConn.Store(&connHolder{conn: conn})
+				log.Printf("[TCP Server] Accepted connection on %s from %s", addr, conn.RemoteAddr().String())
+			}
+		}()
 	} else {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
@@ -358,46 +385,107 @@ func newTCPKISSConnection(host string, port int, isServer bool) (*TCPKISSConnect
 }
 
 func (t *TCPKISSConnection) SendFrame(frame []byte) error {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-	_, err := t.conn.Write(frame)
-	return err
+	if !t.isServer {
+		t.lock.Lock()
+		defer t.lock.Unlock()
+		_, err := t.conn.Write(frame)
+		return err
+	}
+	// In server mode, wait for a valid connection.
+	for {
+		holderInterface := t.atomicConn.Load()
+		holder := holderInterface.(*connHolder)
+		if holder.conn == nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		t.lock.Lock()
+		// Double-check connection is still valid.
+		holderInterface = t.atomicConn.Load()
+		holder = holderInterface.(*connHolder)
+		if holder.conn == nil {
+			t.lock.Unlock()
+			continue
+		}
+		_, err := holder.conn.Write(frame)
+		t.lock.Unlock()
+		return err
+	}
 }
 
 func (t *TCPKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
-	t.conn.SetReadDeadline(time.Now().Add(timeout))
-	buf := make([]byte, 1024)
-	n, err := t.conn.Read(buf)
-	if err != nil {
-		if err == io.EOF {
-			return []byte{}, nil
+	if !t.isServer {
+		t.conn.SetReadDeadline(time.Now().Add(timeout))
+		buf := make([]byte, 1024)
+		n, err := t.conn.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				return []byte{}, nil
+			}
+			if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
+				return []byte{}, nil
+			}
+			return nil, err
 		}
-		if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
-			return []byte{}, nil
-		}
-		return nil, err
+		return buf[:n], nil
 	}
-	return buf[:n], nil
+	// Server mode: wait for an active connection.
+	start := time.Now()
+	for {
+		holderInterface := t.atomicConn.Load()
+		holder := holderInterface.(*connHolder)
+		if holder.conn == nil {
+			if time.Since(start) > timeout {
+				return []byte{}, nil
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		holder.conn.SetReadDeadline(time.Now().Add(timeout))
+		buf := make([]byte, 1024)
+		n, err := holder.conn.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				// Connection closed. Update the holder.
+				t.atomicConn.Store(&connHolder{conn: nil})
+				continue
+			}
+			if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
+				return []byte{}, nil
+			}
+			return nil, err
+		}
+		return buf[:n], nil
+	}
 }
 
 func (t *TCPKISSConnection) Close() error {
 	if t.conn != nil {
 		t.conn.Close()
 	}
-	if t.isServer && t.listener != nil {
+	if t.listener != nil {
 		t.listener.Close()
+	}
+	// Close any active connection in server mode.
+	holderInterface := t.atomicConn.Load()
+	holder := holderInterface.(*connHolder)
+	if holder.conn != nil {
+		holder.conn.Close()
 	}
 	return nil
 }
 
+// SerialKISSConnection implements KISSConnection for serial devices.
 type SerialKISSConnection struct {
-	ser  *serial.Port
+	ser  serial.Port
 	lock sync.Mutex
 }
 
 func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, error) {
-	c := &serial.Config{Name: portName, Baud: baud, ReadTimeout: time.Millisecond * 100}
-	ser, err := serial.OpenPort(c)
+	mode := &serial.Mode{
+		BaudRate: baud,
+	}
+	ser, err := serial.Open(portName, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -484,21 +572,20 @@ func (fr *FrameReader) Stop() {
 // -----------------------------------------------------------------------------
 
 // Transfer holds header information and progress for a file transfer.
-// TimeoutSeconds is now an int and EncodingMethod is new.
 type Transfer struct {
 	Sender         string
 	Receiver       string
 	FileID         string
 	Filename       string
-	TotalPackets   int             // Total packets (including header)
-	LastSeq        int             // Highest sequence number seen
+	TotalPackets   int            // Total packets (including header)
+	LastSeq        int            // Highest sequence number seen
 	StartTime      time.Time
-	TimeoutSeconds int             // Timeout value (from header, now an integer)
-	FinAckTime     time.Time       // Time at which FIN-ACK was received; zero if not received
-	PacketData     map[int][]byte  // Map of sequence number to payload (data packets only)
-	EncodingMethod byte            // new: 0 = binary, 1 = base64
-	Compress       bool            // Whether file was compressed
-	FileSaved      bool            // File saved flag
+	TimeoutSeconds int            // Timeout value (from header)
+	FinAckTime     time.Time      // Time at which FIN-ACK was received; zero if not received
+	PacketData     map[int][]byte // Map of sequence number to payload (data packets only)
+	EncodingMethod byte           // new: 0 = binary, 1 = base64
+	Compress       bool           // Whether file was compressed
+	FileSaved      bool           // File saved flag
 }
 
 var (
@@ -524,9 +611,13 @@ var (
 	tnc2Baud       = flag.Int("tnc2-baud", 115200, "Baud rate for TNC2 serial connection")
 )
 
-var callsigns = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns")
-var debug = flag.Bool("debug", false, "Enable debug logging")
-var saveFiles = flag.Bool("save-files", false, "Save all files seen by the proxy (prepending <SENDER>_<RECEIVER>_ to filename)")
+var (
+	// --callsigns is optional. When empty, any callsign is allowed.
+	callsigns = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional)")
+	debug     = flag.Bool("debug", false, "Enable debug logging")
+	saveFiles = flag.Bool("save-files", false, "Save all files seen by the proxy (prepending <SENDER>_<RECEIVER>_ to filename)")
+	loop      = flag.Bool("loop", false, "Enable loopback mode. In this mode, TNC1 listens on TCP port 5010 and TNC2 on TCP port 5011. Mutually exclusive with TNC1/TNC2 options.")
+)
 
 // -----------------------------------------------------------------------------
 // Packet Processing and Forwarding Logic
@@ -543,26 +634,29 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 
 	key := canonicalKey(packet.Sender, packet.Receiver, packet.FileID)
 
+	// Enforce allowed callsigns only if provided.
+	if packet.Type != "ack" && len(allowedCalls) > 0 {
+		srcAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Sender))]
+		dstAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Receiver))]
+		if !srcAllowed || !dstAllowed {
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping packet: callsign not allowed",
+				direction, packet.FileID, packet.Sender, packet.Receiver)
+			return
+		}
+	}
+
 	transfersLock.Lock()
 	transfer, exists := transfers[key]
 	if exists && !transfer.FinAckTime.IsZero() {
 		if time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds)*time.Second {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping packet.", direction, packet.FileID, packet.Sender, packet.Receiver)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping packet.",
+				direction, packet.FileID, packet.Sender, packet.Receiver)
 			delete(transfers, key)
 			transfersLock.Unlock()
 			return
 		}
 	}
 	transfersLock.Unlock()
-
-	if packet.Type != "ack" {
-		srcAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Sender))]
-		dstAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Receiver))]
-		if !srcAllowed || !dstAllowed {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping packet: callsign not allowed", direction, packet.FileID, packet.Sender, packet.Receiver)
-			return
-		}
-	}
 
 	if packet.Type == "ack" {
 		transfersLock.Lock()
@@ -571,13 +665,16 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 			if strings.Contains(packet.Ack, "FIN-ACK") {
 				if transfer.FinAckTime.IsZero() {
 					transfer.FinAckTime = time.Now()
-					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Received FIN-ACK for file %s. Transfer complete. Continuing for timeout period (%d sec).", direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename, transfer.TimeoutSeconds)
+					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Received FIN-ACK for file %s. Transfer complete. Continuing for timeout period (%d sec).",
+						direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename, transfer.TimeoutSeconds)
 				} else {
-					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Re-received FIN-ACK for file %s.", direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename)
+					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Re-received FIN-ACK for file %s.",
+						direction, packet.FileID, packet.Sender, packet.Receiver, transfer.Filename)
 				}
 			} else {
 				if !transfer.FinAckTime.IsZero() && time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds)*time.Second {
-					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping ACK packet.", direction, packet.FileID, packet.Sender, packet.Receiver)
+					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping ACK packet.",
+						direction, packet.FileID, packet.Sender, packet.Receiver)
 					delete(transfers, key)
 					transfersLock.Unlock()
 					return
@@ -586,58 +683,66 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 			transfersLock.Unlock()
 		} else {
 			transfersLock.Unlock()
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping ACK packet: header not seen yet", direction, packet.FileID, packet.Sender, packet.Receiver)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping ACK packet: header not seen yet",
+				direction, packet.FileID, packet.Sender, packet.Receiver)
 			return
 		}
-		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Forwarding ACK packet: %s", direction, packet.FileID, packet.Sender, packet.Receiver, packet.Ack)
+		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Forwarding ACK packet: %s",
+			direction, packet.FileID, packet.Sender, packet.Receiver, packet.Ack)
 		frame := buildKISSFrame(pkt)
 		if err := dstConn.SendFrame(frame); err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Error forwarding ACK packet: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Error forwarding ACK packet: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 		}
 		return
 	}
 
 	// Process header packets (seq==1).
 	if packet.Seq == 1 {
-		// Use the header payload as sent by the sender.
 		headerStr := string(packet.Payload)
 		fields := strings.Split(headerStr, "|")
 		if len(fields) < 10 {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping header packet: invalid header (not enough fields)", direction, packet.FileID, packet.Sender, packet.Receiver)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping header packet: invalid header (not enough fields)",
+				direction, packet.FileID, packet.Sender, packet.Receiver)
 			return
 		}
-		// Parse header fields.
 		timeoutSec, err := strconv.Atoi(fields[0])
 		if err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid timeout seconds in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid timeout seconds in header: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
 		}
 		timeoutRetries, err := strconv.Atoi(fields[1])
 		if err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid timeout retries in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid timeout retries in header: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
 		}
 		filename := fields[2]
 		origSize, err := strconv.Atoi(fields[3])
 		if err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid original size in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid original size in header: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
 		}
 		compSize, err := strconv.Atoi(fields[4])
 		if err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid compressed size in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid compressed size in header: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
 		}
 		md5Hash := fields[5]
 		encodingMethodVal, err := strconv.Atoi(fields[7])
 		if err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid encoding method in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid encoding method in header: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
 		}
 		compFlag := fields[8]
 		totalPackets, err := strconv.Atoi(fields[9])
 		if err != nil {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid total packets in header: %v", direction, packet.FileID, packet.Sender, packet.Receiver, err)
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Invalid total packets in header: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 			return
 		}
 		compress := compFlag == "1"
@@ -733,13 +838,11 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 
 		if complete && !alreadySaved {
 			var buf bytes.Buffer
-			// Attempt to reassemble the file.
 			for i := 2; i <= transfer.TotalPackets; i++ {
 				data, ok := transfer.PacketData[i]
 				if !ok {
 					log.Printf("[%s] [FileID: %s] Missing packet seq %d; cannot reassemble file.",
 						direction, packet.FileID, i)
-					// Instead of aborting, skip file saving.
 					goto ForwardPacket
 				}
 				if transfer.EncodingMethod == 1 {
@@ -819,55 +922,80 @@ ForwardPacket:
 func main() {
 	flag.Parse()
 
-	if *callsigns == "" {
-		log.Fatalf("The -callsigns option is required.")
+	if *callsigns != "" {
+		for _, s := range strings.Split(*callsigns, ",") {
+			s = strings.ToUpper(strings.TrimSpace(s))
+			if s != "" {
+				allowedCalls[s] = true
+			}
+		}
+		log.Printf("Allowed callsigns: %v", allowedCalls)
+	} else {
+		log.Printf("--callsigns not set, allowing any callsigns.")
 	}
 
-	for _, s := range strings.Split(*callsigns, ",") {
-		s = strings.ToUpper(strings.TrimSpace(s))
-		if s != "" {
-			allowedCalls[s] = true
+	if *loop {
+		var conflict bool
+		flag.Visit(func(f *flag.Flag) {
+			if strings.HasPrefix(f.Name, "tnc1-") || strings.HasPrefix(f.Name, "tnc2-") {
+				conflict = true
+			}
+		})
+		if conflict {
+			log.Fatal("--loop is mutually exclusive with TNC1/TNC2 options. Remove TNC1/TNC2 flags when using --loop.")
 		}
 	}
-	log.Printf("Allowed callsigns: %v", allowedCalls)
 
 	var tnc1Conn KISSConnection
-	var err error
-	switch strings.ToLower(*tnc1ConnType) {
-	case "tcp":
-		tnc1Conn, err = newTCPKISSConnection(*tnc1Host, *tnc1Port, false)
-		if err != nil {
-			log.Fatalf("Error creating TNC1 TCP connection: %v", err)
-		}
-	case "serial":
-		if *tnc1SerialPort == "" {
-			log.Fatalf("TNC1 serial port must be specified for serial connection.")
-		}
-		tnc1Conn, err = newSerialKISSConnection(*tnc1SerialPort, *tnc1Baud)
-		if err != nil {
-			log.Fatalf("Error creating TNC1 serial connection: %v", err)
-		}
-	default:
-		log.Fatalf("Invalid TNC1 connection type: %s", *tnc1ConnType)
-	}
-
 	var tnc2Conn KISSConnection
-	switch strings.ToLower(*tnc2ConnType) {
-	case "tcp":
-		tnc2Conn, err = newTCPKISSConnection(*tnc2Host, *tnc2Port, false)
+	var err error
+
+	if *loop {
+		log.Printf("Loopback mode enabled. Listening on TCP port 5010 for TNC1 and 5011 for TNC2.")
+		tnc1Conn, err = newTCPKISSConnection("0.0.0.0", 5010, true)
 		if err != nil {
-			log.Fatalf("Error creating TNC2 TCP connection: %v", err)
+			log.Fatalf("Error setting up TNC1 listener: %v", err)
 		}
-	case "serial":
-		if *tnc2SerialPort == "" {
-			log.Fatalf("TNC2 serial port must be specified for serial connection.")
-		}
-		tnc2Conn, err = newSerialKISSConnection(*tnc2SerialPort, *tnc2Baud)
+		tnc2Conn, err = newTCPKISSConnection("0.0.0.0", 5011, true)
 		if err != nil {
-			log.Fatalf("Error creating TNC2 serial connection: %v", err)
+			log.Fatalf("Error setting up TNC2 listener: %v", err)
 		}
-	default:
-		log.Fatalf("Invalid TNC2 connection type: %s", *tnc2ConnType)
+	} else {
+		switch strings.ToLower(*tnc1ConnType) {
+		case "tcp":
+			tnc1Conn, err = newTCPKISSConnection(*tnc1Host, *tnc1Port, false)
+			if err != nil {
+				log.Fatalf("Error creating TNC1 TCP connection: %v", err)
+			}
+		case "serial":
+			if *tnc1SerialPort == "" {
+				log.Fatalf("TNC1 serial port must be specified for serial connection.")
+			}
+			tnc1Conn, err = newSerialKISSConnection(*tnc1SerialPort, *tnc1Baud)
+			if err != nil {
+				log.Fatalf("Error creating TNC1 serial connection: %v", err)
+			}
+		default:
+			log.Fatalf("Invalid TNC1 connection type: %s", *tnc1ConnType)
+		}
+
+		switch strings.ToLower(*tnc2ConnType) {
+		case "tcp":
+			tnc2Conn, err = newTCPKISSConnection(*tnc2Host, *tnc2Port, false)
+			if err != nil {
+				log.Fatalf("Error creating TNC2 TCP connection: %v", err)
+			}
+		case "serial":
+			if *tnc2SerialPort == "" {
+				log.Fatalf("TNC2 serial port must be specified for serial connection.")
+			}
+			tnc2Conn, err = newSerialKISSConnection(*tnc2SerialPort, *tnc2Baud)
+			if err != nil {
+				log.Fatalf("Error creating TNC2 serial connection: %v", err)
+			}
+		default:
+			log.Fatalf("Invalid TNC2 connection type: %s", *tnc2ConnType)
+		}
 	}
 
 	tnc1Chan := make(chan []byte, 100)
