@@ -523,8 +523,8 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial")
 	flag.StringVar(&args.File, "file", "", "File to send (required if sender)")
 	noCompress := flag.Bool("no-compress", false, "Disable compression")
-	flag.IntVar(&args.TimeoutSeconds, "timeout-seconds", 5, "Timeout in seconds (default 5 seconds) [Sender only]")
-	flag.IntVar(&args.TimeoutRetries, "timeout-retries", 5, "Number of timeout retries (default 5) [Sender only]")
+	flag.IntVar(&args.TimeoutSeconds, "timeout-seconds", 10, "Timeout in seconds [Sender only]")
+	flag.IntVar(&args.TimeoutRetries, "timeout-retries", 5, "Number of timeout retries [Sender only]")
 	flag.BoolVar(&args.OneFile, "one-file", false, "Exit after successfully receiving one file (Receiver mode)")
 	flag.BoolVar(&args.Base64, "base64", false, "Enable base64 encoding for file data payloads (sender mode only)")
 	flag.Parse()
@@ -1039,7 +1039,7 @@ func receiverMain(args *Arguments) {
 					RetryCount:       0,
 					TimeoutSeconds:   transferTimeoutSeconds,
 					TimeoutRetries:   transferTimeoutRetries,
-					RetryInterval:    float64(transferTimeoutSeconds),
+					RetryInterval:    float64(transferTimeoutSeconds) + 1.5,
 					Total:            totalPackets,
 					StartTime:        time.Now(),
 					BytesReceived:    0,
