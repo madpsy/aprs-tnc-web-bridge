@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tarm/serial"
+	"go.bug.st/serial" // Switched from "github.com/tarm/serial" to go.bug.st/serial
 	"github.com/zishang520/engine.io/v2/types"
 	"github.com/zishang520/socket.io/v2/socket"
 )
@@ -118,16 +118,23 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Error: -serial-port is required when connection type is serial")
 			os.Exit(1)
 		}
-		config := &serial.Config{
-			Name:        *serialPort,
-			Baud:        *baudRate,
-			ReadTimeout: time.Millisecond * 100,
+		// Create a Mode with the desired settings.
+		mode := &serial.Mode{
+			BaudRate: *baudRate,
+			Parity:   serial.NoParity,
+			DataBits: 8,
+			StopBits: serial.OneStopBit,
 		}
-		s, err := serial.OpenPort(config)
+		// Open the serial port using go.bug.st/serial.
+		port, err := serial.Open(*serialPort, mode)
 		if err != nil {
 			log.Fatalf("Failed to open serial port %s: %v", *serialPort, err)
 		}
-		deviceConn = s
+		// Optionally, set a read timeout.
+		if err := port.SetReadTimeout(time.Millisecond * 100); err != nil {
+			log.Fatalf("Failed to set read timeout on serial port %s: %v", *serialPort, err)
+		}
+		deviceConn = port
 		log.Printf("Opened serial connection on %s at %d baud", *serialPort, *baudRate)
 	case "tcp":
 		if *tcpHost == "" || *tcpPort == 0 {

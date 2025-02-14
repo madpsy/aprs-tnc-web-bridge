@@ -10,7 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/fsnotify/fsnotify" // go get github.com/fsnotify/fsnotify
-	"github.com/tarm/serial"        // run: go get github.com/tarm/serial
+	"go.bug.st/serial" // go get go.bug.st/serial
 	"io"
 	"io/ioutil"
 	"log"
@@ -378,14 +378,22 @@ func (t *TCPKISSConnection) Close() error {
 
 // SerialKISSConnection implements KISSConnection over a serial port.
 type SerialKISSConnection struct {
-	ser  *serial.Port
+	ser  serial.Port
 	lock sync.Mutex
 }
 
+// Update the newSerialKISSConnection function:
 func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, error) {
-	c := &serial.Config{Name: portName, Baud: baud, ReadTimeout: time.Millisecond * 100}
-	ser, err := serial.OpenPort(c)
+	mode := &serial.Mode{
+		BaudRate: baud,
+	}
+	ser, err := serial.Open(portName, mode)
 	if err != nil {
+		return nil, err
+	}
+	// Optionally set a read timeout (100ms in this example)
+	if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
+		ser.Close()
 		return nil, err
 	}
 	log.Printf("[Serial] Opened serial port %s at %d baud", portName, baud)

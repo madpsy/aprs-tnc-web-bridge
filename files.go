@@ -9,7 +9,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"github.com/tarm/serial" // ensure you have initialized a module and run: go get github.com/tarm/serial
+	"go.bug.st/serial"
 	"io"
 	"io/ioutil"
 	"log"
@@ -390,14 +390,23 @@ func (t *TCPKISSConnection) Close() error {
 
 // SerialKISSConnection implements KISSConnection over a serial port.
 type SerialKISSConnection struct {
-	ser  *serial.Port
+	ser  serial.Port
 	lock sync.Mutex
 }
 
 func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, error) {
-	c := &serial.Config{Name: portName, Baud: baud, ReadTimeout: time.Millisecond * 100}
-	ser, err := serial.OpenPort(c)
+	mode := &serial.Mode{
+		BaudRate: baud,
+		Parity:   serial.NoParity,
+		DataBits: 8,
+		StopBits: serial.OneStopBit,
+	}
+	ser, err := serial.Open(portName, mode)
 	if err != nil {
+		return nil, err
+	}
+	// Optionally, set a read timeout if desired.
+	if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
 		return nil, err
 	}
 	log.Printf("[Serial] Opened serial port %s at %d baud", portName, baud)
