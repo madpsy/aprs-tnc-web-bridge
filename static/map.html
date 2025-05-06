@@ -1043,6 +1043,12 @@ function rebuildPopup(station) {
                class="aprsfi-link" 
                target="_blank">
               aprs.fi
+            </a>
+            |
+            <a href="https://www.vesselfinder.com/vessels/details/${encodeURIComponent(station.replace(/^AIS-/, ''))}"
+               class="aprsfi-link"
+               target="_blank">
+              VesselFinder
             </a>`;
 
     // Append the extra "LoRa" link if the 'To' field matches either value.

@@ -483,11 +483,20 @@ def parse_ax25_frame(frame):
 
 def decode_aprs(full_packet):
     try:
-        return aprslib.parse(full_packet)
+        parsed = aprslib.parse(full_packet)
     except Exception as e:
         if config.get('debug'):
             print(f"APRS decode error: {e}")
         return None
+
+    # --- patch: rewrite source if is AIS packet ---
+    if parsed.get('from') == 'AIS' and parsed.get('object_name'):
+        mmsi = str(parsed['object_name']).strip()
+        parsed['orig_from'] = parsed['from']
+        parsed['from'] = f"AIS-{mmsi}"
+    # ---------------------------------------------------------
+
+    return parsed
 
 # ------------------------------------------------------------------------------
 #                           UDP Forwarding (iGate) + MQTT-FORWARD
