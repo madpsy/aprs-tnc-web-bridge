@@ -464,6 +464,32 @@
             font-size: 14px;
             color: #333;
         }
+        .symbol-picker {
+            position: absolute;
+            display: none;
+            grid-template-columns: repeat(14, 32px);
+            gap: 4px;
+            padding: 8px;
+            background: #fff;
+            border: 1px solid #ccc;
+            box-shadow: 0 4px 12px rgba(0,0,0,.2);
+            z-index: 3000;
+	    transform: translateX(-100%);
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+
+        .symbol-picker img {
+            width: 32px;
+            height: 32px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            border-radius: 4px;
+        }
+
+        .symbol-picker img:hover {
+            border-color: #007BFF;
+        }
 
     </style>
 </head>
@@ -478,11 +504,17 @@
         <label>Status:
             <input type="text" id="status-input" placeholder="Optional...">
         </label>
-        <label class="symbol-container">Symbol:
-            <input type="text" id="symbol-input" value="/L" maxlength="2" style="width:2em;">
+	<label class="symbol-container">Symbol:
+            <input type="text" id="symbol-input" maxlength="2" style="width:2em;">
             <img id="symbol-preview-img" alt="">
+            <button type="button" id="symbol-picker-btn" title="Choose symbol">▼</button>
         </label>
-
+        <label id="lat-label"  style="display:none">Lat:
+            <input type="text" id="manual-lat-input" placeholder="55.592" size="8">
+        </label>
+        <label id="lon-label"  style="display:none">Lon:
+            <input type="text" id="manual-lon-input" placeholder="13.002" size="8">
+        </label>
         <label>
             <input type="checkbox" id="auto-location-checkbox">
             Auto Location
@@ -492,6 +524,7 @@
         <button id="reset-btn">Reset</button> <!-- Renamed Reset Button -->
         <span id="send-status"></span>
     </div>
+    <div id="symbol-picker" class="symbol-picker"></div>
 
     <!-- New Statistics Section -->
     <div id="statistics">
@@ -1136,6 +1169,18 @@ function rebuildPopup(station) {
         var lastBrowserLat = null;
         var lastBrowserLng = null;
 
+        var manualLatInput = document.getElementById('manual-lat-input');
+        var manualLonInput = document.getElementById('manual-lon-input');
+        var latLabel       = document.getElementById('lat-label');
+        var lonLabel       = document.getElementById('lon-label');
+
+	function toggleManualInputs(show) {
+            latLabel.style.display = show ? 'block' : 'none';
+            lonLabel.style.display = show ? 'block' : 'none';
+            manualLatInput.disabled = !show;
+            manualLonInput.disabled = !show;
+        }
+
         function startAutoLocation() {
             updateLocationFromBrowser();
             autoLocationInterval = setInterval(updateLocationFromBrowser, 30000);
@@ -1175,16 +1220,33 @@ function rebuildPopup(station) {
         autoLocationCheckbox.addEventListener('change', function() {
             if (this.checked) {
                 startAutoLocation();
+                toggleManualInputs(false);
             } else {
                 stopAutoLocation();
+                toggleManualInputs(true);
             }
         });
+        toggleManualInputs(!autoLocationCheckbox.checked);
 
         function sendLocationAndOptionallyBeacon() {
             var callsignVal = document.getElementById('callsign-input').value.trim();
             if (!callsignVal) return;
 
-            var latlng = userMarker.getLatLng();
+	    let latlng;
+            if (autoLocationCheckbox.checked) {
+	        latlng = userMarker.getLatLng();
+	    } else {
+	        const lat = parseFloat(manualLatInput.value);
+                const lon = parseFloat(manualLonInput.value);
+                if (isNaN(lat) || isNaN(lon)) {
+                    alert("Please insert valid Lat & Lon.");
+                    return;
+                }
+                latlng = L.latLng(lat, lon);
+                userMarker.setLatLng(latlng);
+                lastBrowserLat = lat;
+                lastBrowserLng = lon;
+	    }
             var commentVal = document.getElementById('comment-input').value.trim();
             var statusVal = document.getElementById('status-input').value.trim();
             var symbolVal = document.getElementById('symbol-input').value;
@@ -1854,6 +1916,66 @@ function rebuildPopup(station) {
                 map.setView([0, 0], 2);
             }
         });
+
+        (function() {
+            const pickerBtn   = document.getElementById('symbol-picker-btn');
+            const pickerDiv   = document.getElementById('symbol-picker');
+            const input       = document.getElementById('symbol-input');
+            const previewImg  = document.getElementById('symbol-preview-img');
+            let symbolsData   = null;
+
+            pickerBtn.addEventListener('click', () => {
+                if (pickerDiv.style.display === 'grid') {
+                    pickerDiv.style.display = 'none';
+                    return;
+                }
+                if (symbolsData) {
+                    openPicker();
+                } else {
+                    fetch('/static/aprs-symbols.json')
+                        .then(r => r.json())
+                        .then(data => {
+                            symbolsData = data;
+                            buildGrid();
+                            openPicker();
+                        })
+                        .catch(err => console.error('Failed to load symbol list', err));
+                }
+            });
+
+            document.addEventListener('click', e => {
+                if (!pickerDiv.contains(e.target) && e.target !== pickerBtn) {
+                    pickerDiv.style.display = 'none';
+                }
+            });
+
+            function openPicker() {
+                const rect = pickerBtn.getBoundingClientRect();
+                pickerDiv.style.top  = (rect.bottom + window.scrollY) + 'px';
+                pickerDiv.style.left = (rect.left   + window.scrollX) + 'px';
+                pickerDiv.style.display = 'grid';
+            }
+
+            function buildGrid() {
+                pickerDiv.innerHTML = '';
+                Object.entries(symbolsData).forEach(([code, b64]) => {
+                    const img = document.createElement('img');
+                    img.src   = 'data:image/png;base64,' + b64;
+                    img.title = code;
+                    img.dataset.code = code;
+                    img.addEventListener('click', () => chooseSymbol(code));
+                    pickerDiv.appendChild(img);
+                });
+            }
+
+            function chooseSymbol(code) {
+                input.value = code;
+                previewImg.src = 'data:image/png;base64,' + symbolsData[code];
+                previewImg.style.display = 'inline';
+                localStorage.setItem('symbol', code);
+                pickerDiv.style.display = 'none';
+            }
+        })();
 
     </script>
 </body>
